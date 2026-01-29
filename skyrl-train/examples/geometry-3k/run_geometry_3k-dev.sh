@@ -13,12 +13,12 @@ set -x
 
 : "${DATA_DIR:="$HOME/data/geometry_3k"}"
 : "${NUM_GPUS:=4}"
-: "${LOGGER:=console}"
-# : "${LOGGER:=wandb}"
+# : "${LOGGER:=console}"
+: "${LOGGER:=wandb}"
 : "${INFERENCE_BACKEND:=vllm}"
 
 uv run --isolated --extra $INFERENCE_BACKEND -m skyrl_train.entrypoints.main_base \
-  data.train_data="['$DATA_DIR/train-dev.parquet']" \
+  data.train_data="['$DATA_DIR/train.parquet']" \
   data.val_data="['$DATA_DIR/test.parquet']" \
   trainer.algorithm.advantage_estimator="grpo" \
   trainer.policy.model.path="Qwen/Qwen3-VL-2B-Instruct" \
