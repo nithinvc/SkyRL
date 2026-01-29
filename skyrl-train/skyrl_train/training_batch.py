@@ -61,13 +61,22 @@ class TensorBatch(dict, Generic[DictType]):
             value = self[key]
             if value is None:
                 continue
-            self._device = value.device if self._device is None else self._device
-            if not isinstance(value, torch.Tensor):
-                raise ValueError(f"Field {key} must be a tensor, got {type(value)}")
-            if len(value) != batch_size:
-                raise ValueError(f"Batch size mismatch in {key}")
-            if value.device != self._device:
-                raise ValueError(f"Device mismatch in {key}. Expected {self._device}, got {value.device}")
+            if isinstance(value, TensorBatch):
+                # Nested TensorBatch: validate batch_size matches
+                if len(value) != batch_size:
+                    raise ValueError(f"Batch size mismatch in nested TensorBatch {key}")
+            elif isinstance(value, list):
+                # List: validate length matches batch_size
+                if len(value) != batch_size:
+                    raise ValueError(f"Batch size mismatch in list {key}")
+            elif isinstance(value, torch.Tensor):
+                self._device = value.device if self._device is None else self._device
+                if len(value) != batch_size:
+                    raise ValueError(f"Batch size mismatch in {key}")
+                if value.device != self._device:
+                    raise ValueError(f"Device mismatch in {key}. Expected {self._device}, got {value.device}")
+            else:
+                raise ValueError(f"Field {key} must be a tensor, list, or TensorBatch, got {type(value)}")
 
     def __getitem__(self, index) -> "TensorBatch[DictType]":
         if isinstance(index, slice):
@@ -77,18 +86,29 @@ class TensorBatch(dict, Generic[DictType]):
         else:
             return super().__getitem__(index)
 
-    def __setitem__(self, key: str, value: Optional[torch.Tensor]) -> None:
+    def __setitem__(self, key: str, value) -> None:
         if value is None:
             super().__setitem__(key, value)
             return
 
-        if not isinstance(value, torch.Tensor):
-            raise ValueError(f"Field {key} must be a tensor, got {type(value)}")
-
-        if hasattr(self, "_batch_size") and self._batch_size is not None and len(value) != self._batch_size:
-            raise ValueError(
-                f"Batch size mismatch in {key}. Expected tensor to be of size {self._batch_size}, got {len(value)}."
-            )
+        # Validate type and batch size
+        if isinstance(value, TensorBatch):
+            if hasattr(self, "_batch_size") and self._batch_size is not None and len(value) != self._batch_size:
+                raise ValueError(
+                    f"Batch size mismatch in nested TensorBatch {key}. Expected size {self._batch_size}, got {len(value)}."
+                )
+        elif isinstance(value, list):
+            if hasattr(self, "_batch_size") and self._batch_size is not None and len(value) != self._batch_size:
+                raise ValueError(
+                    f"Batch size mismatch in list {key}. Expected size {self._batch_size}, got {len(value)}."
+                )
+        elif isinstance(value, torch.Tensor):
+            if hasattr(self, "_batch_size") and self._batch_size is not None and len(value) != self._batch_size:
+                raise ValueError(
+                    f"Batch size mismatch in {key}. Expected tensor to be of size {self._batch_size}, got {len(value)}."
+                )
+        else:
+            raise ValueError(f"Field {key} must be a tensor, list, or TensorBatch, got {type(value)}")
 
         super().__setitem__(key, value)
 
@@ -108,8 +128,18 @@ class TensorBatch(dict, Generic[DictType]):
         for key, value in self.items():
             if value is None:
                 continue
-            assert isinstance(value, torch.Tensor), f"Field {key} must be a tensor, got {type(value)}"
-            self[key] = value.to(device, dtype, non_blocking=non_blocking)
+            if isinstance(value, TensorBatch):
+                value.to(device, dtype, non_blocking=non_blocking)
+            elif isinstance(value, list):
+                # Iterate through list and apply to() to any tensors
+                super().__setitem__(
+                    key,
+                    [v.to(device, dtype, non_blocking=non_blocking) if isinstance(v, torch.Tensor) else v for v in value],
+                )
+            elif isinstance(value, torch.Tensor):
+                super().__setitem__(key, value.to(device, dtype, non_blocking=non_blocking))
+            else:
+                raise ValueError(f"Field {key} must be a tensor, list, or TensorBatch, got {type(value)}")
         return self
 
     def contiguous(self) -> "TensorBatch":
@@ -117,9 +147,15 @@ class TensorBatch(dict, Generic[DictType]):
         for key, value in self.items():
             if value is None:
                 continue
-            # some of these asserts are not needed, but it's kept for type safety
-            assert isinstance(value, torch.Tensor), f"Field {key} must be a tensor, got {type(value)}"
-            self[key] = value.contiguous()
+            if isinstance(value, TensorBatch):
+                value.contiguous()
+            elif isinstance(value, list):
+                # Iterate through list and apply contiguous() to any tensors
+                super().__setitem__(key, [v.contiguous() if isinstance(v, torch.Tensor) else v for v in value])
+            elif isinstance(value, torch.Tensor):
+                super().__setitem__(key, value.contiguous())
+            else:
+                raise ValueError(f"Field {key} must be a tensor, list, or TensorBatch, got {type(value)}")
         return self
 
     @property
@@ -129,8 +165,70 @@ class TensorBatch(dict, Generic[DictType]):
 
     @property
     def device(self) -> torch.device:
-        """Get the device for the tensors"""
+        """Get the device for the tensors.
+
+        Returns the device of the first tensor found, recursing into nested TensorBatches.
+        Lists are skipped since they don't have a device.
+        """
+        if self._device is not None:
+            return self._device
+        # Try to find a device from nested TensorBatches
+        for value in self.values():
+            if isinstance(value, TensorBatch):
+                nested_device = value.device
+                if nested_device is not None:
+                    return nested_device
         return self._device
+
+    def _serialize_value(self, value):
+        """Serialize a single value for pickle protocol"""
+        if value is None:
+            return {"type": "none", "data": None}
+        elif isinstance(value, TensorBatch):
+            return {"type": "tensorbatch", "data": value.__getstate__()}
+        elif isinstance(value, list):
+            # Serialize each element in the list
+            serialized_list = []
+            for item in value:
+                if isinstance(item, torch.Tensor):
+                    buffer = io.BytesIO()
+                    torch.save(item, buffer)
+                    serialized_list.append({"type": "tensor", "data": buffer.getvalue()})
+                else:
+                    serialized_list.append({"type": "other", "data": item})
+            return {"type": "list", "data": serialized_list}
+        elif isinstance(value, torch.Tensor):
+            buffer = io.BytesIO()
+            torch.save(value, buffer)
+            return {"type": "tensor", "data": buffer.getvalue()}
+        else:
+            raise ValueError(f"Unsupported type {type(value)} for serialization")
+
+    def _deserialize_value(self, serialized):
+        """Deserialize a single value from pickle protocol"""
+        value_type = serialized["type"]
+        data = serialized["data"]
+
+        if value_type == "none":
+            return None
+        elif value_type == "tensorbatch":
+            nested_batch = TensorBatch.__new__(TensorBatch)
+            nested_batch.__setstate__(data)
+            return nested_batch
+        elif value_type == "list":
+            deserialized_list = []
+            for item in data:
+                if item["type"] == "tensor":
+                    buffer = io.BytesIO(item["data"])
+                    deserialized_list.append(torch.load(buffer))
+                else:
+                    deserialized_list.append(item["data"])
+            return deserialized_list
+        elif value_type == "tensor":
+            buffer = io.BytesIO(data)
+            return torch.load(buffer)
+        else:
+            raise ValueError(f"Unknown serialized type {value_type}")
 
     def __getstate__(self):
         """Serialize the `TensorBatch` object for pickle protocol"""
@@ -139,9 +237,7 @@ class TensorBatch(dict, Generic[DictType]):
             assert self._device == torch.device("cpu"), "Tensors must be on CPU before serialization"
         batch_dict = {}
         for key, value in self.items():
-            buffer = io.BytesIO()
-            torch.save(value, buffer)
-            batch_dict[key] = buffer.getvalue()
+            batch_dict[key] = self._serialize_value(value)
 
         return {
             "batch_dict": batch_dict,
@@ -152,9 +248,8 @@ class TensorBatch(dict, Generic[DictType]):
 
     def __setstate__(self, state):
         """Deserialize the `TensorBatch` object and load it into memory"""
-        for key, value in state["batch_dict"].items():
-            buffer = io.BytesIO(value)
-            self[key] = torch.load(buffer)
+        for key, serialized in state["batch_dict"].items():
+            super().__setitem__(key, self._deserialize_value(serialized))
 
         self._batch_size = state["batch_size"]
         self._device = state["device"]
@@ -177,9 +272,14 @@ class TensorBatch(dict, Generic[DictType]):
         for key, value in self.items():
             if value is None:
                 new_batch[key] = value
-            else:
-                assert isinstance(value, torch.Tensor), f"Field {key} must be a tensor, got {type(value)}"
+            elif isinstance(value, TensorBatch):
                 new_batch[key] = value.repeat(repeats)
+            elif isinstance(value, list):
+                new_batch[key] = value * repeats
+            elif isinstance(value, torch.Tensor):
+                new_batch[key] = value.repeat(repeats)
+            else:
+                raise ValueError(f"Field {key} must be a tensor, list, or TensorBatch, got {type(value)}")
         new_batch = self.__class__(new_batch)
         new_batch.metadata = self.metadata
         return new_batch
@@ -199,9 +299,14 @@ class TensorBatch(dict, Generic[DictType]):
         for key, value in self.items():
             if value is None:
                 new_batch[key] = value
-            else:
-                assert isinstance(value, torch.Tensor), f"Field {key} must be a tensor, got {type(value)}"
+            elif isinstance(value, TensorBatch):
                 new_batch[key] = value.repeat_interleave(repeats)
+            elif isinstance(value, list):
+                new_batch[key] = [item for item in value for _ in range(repeats)]
+            elif isinstance(value, torch.Tensor):
+                new_batch[key] = value.repeat_interleave(repeats)
+            else:
+                raise ValueError(f"Field {key} must be a tensor, list, or TensorBatch, got {type(value)}")
         new_batch = self.__class__(new_batch)
         new_batch.metadata = self.metadata
         return new_batch
@@ -212,14 +317,16 @@ class TensorBatch(dict, Generic[DictType]):
         for i in range(0, self.batch_size, chunk_size):
             chunk_data = {}
             for key, value in self.items():
-                if value is not None:
-                    if isinstance(value, torch.Tensor):
-                        chunk_data[key] = value[i : i + chunk_size]
-                    else:
-                        raise ValueError(f"Unsupported type {type(value)} for key {key}")
-                else:
-                    # `None` values are not chunked
+                if value is None:
                     chunk_data[key] = value
+                elif isinstance(value, TensorBatch):
+                    chunk_data[key] = value.slice(i, i + chunk_size)
+                elif isinstance(value, list):
+                    chunk_data[key] = value[i : i + chunk_size]
+                elif isinstance(value, torch.Tensor):
+                    chunk_data[key] = value[i : i + chunk_size]
+                else:
+                    raise ValueError(f"Unsupported type {type(value)} for key {key}")
             chunk = self.__class__(chunk_data)
             chunk.metadata = self.metadata
             chunks.append(chunk)
@@ -239,14 +346,16 @@ class TensorBatch(dict, Generic[DictType]):
         slice_obj = slice(start, end, step)
         sliced_data = {}
         for key, value in self.items():
-            if value is not None:
-                if isinstance(value, torch.Tensor):
-                    sliced_data[key] = value[slice_obj]
-                else:
-                    raise ValueError(f"Unsupported type {type(value)} for key {key}")
-            else:
-                # `None` values are not sliced
+            if value is None:
                 sliced_data[key] = value
+            elif isinstance(value, TensorBatch):
+                sliced_data[key] = value.slice(start, end, step)
+            elif isinstance(value, list):
+                sliced_data[key] = value[slice_obj]
+            elif isinstance(value, torch.Tensor):
+                sliced_data[key] = value[slice_obj]
+            else:
+                raise ValueError(f"Unsupported type {type(value)} for key {key}")
         sliced_batch = self.__class__(sliced_data)
         sliced_batch.metadata = self.metadata
         return sliced_batch
@@ -274,14 +383,16 @@ class TensorBatch(dict, Generic[DictType]):
         cat_data = {}
         assert len(shards) > 0, "Cannot cat an empty list of shards"
         for key, value in shards[0].items():
-            if value is not None:
-                if isinstance(value, torch.Tensor):
-                    cat_data[key] = torch.cat([shard[key] for shard in shards])
-                else:
-                    raise ValueError(f"Unsupported type {type(value)} for key {key}")
-            else:
-                # `None` values are not cat'd
+            if value is None:
                 cat_data[key] = value
+            elif isinstance(value, TensorBatch):
+                cat_data[key] = TensorBatch.cat([shard[key] for shard in shards])
+            elif isinstance(value, list):
+                cat_data[key] = sum([shard[key] for shard in shards], [])
+            elif isinstance(value, torch.Tensor):
+                cat_data[key] = torch.cat([shard[key] for shard in shards])
+            else:
+                raise ValueError(f"Unsupported type {type(value)} for key {key}")
         metadata = shards[0].metadata
         cat_batch = cls(cat_data)
         cat_batch.metadata = metadata
@@ -294,6 +405,35 @@ class TensorBatch(dict, Generic[DictType]):
         """
         return self._batch_size
 
+    def _values_equal(self, v1, v2) -> bool:
+        """Check if two values are equal, handling tensors, lists, and nested TensorBatches"""
+        if v1 is None and v2 is None:
+            return True
+        if v1 is None or v2 is None:
+            return False
+        if type(v1) != type(v2):
+            return False
+
+        if isinstance(v1, TensorBatch):
+            return v1 == v2  # Recursive equality check
+        elif isinstance(v1, list):
+            if len(v1) != len(v2):
+                return False
+            for item1, item2 in zip(v1, v2):
+                if isinstance(item1, torch.Tensor) and isinstance(item2, torch.Tensor):
+                    if not torch.equal(item1, item2):
+                        return False
+                elif isinstance(item1, torch.Tensor) or isinstance(item2, torch.Tensor):
+                    # One is tensor, one is not
+                    return False
+                elif item1 != item2:
+                    return False
+            return True
+        elif isinstance(v1, torch.Tensor):
+            return torch.equal(v1, v2)
+        else:
+            return v1 == v2
+
     def __eq__(self, other: Any) -> bool:
         """Check if two `TensorBatch` objects are equal"""
         if not isinstance(other, TensorBatch):
@@ -305,9 +445,13 @@ class TensorBatch(dict, Generic[DictType]):
         if len(self.items()) != len(other.items()):
             return False
         for k, v in self.items():
-            if k not in other or not torch.equal(v, other[k]):
+            if k not in other or not self._values_equal(v, dict.__getitem__(other, k)):
                 return False
         return True
+
+    def __ne__(self, other: Any) -> bool:
+        """Check if two `TensorBatch` objects are not equal"""
+        return not self.__eq__(other)
 
     def __str__(self) -> str:
         """String representation of the `TensorBatch` object"""
@@ -333,8 +477,7 @@ class TrainingInput(TypedDict, total=False):
     kl: Float[torch.Tensor, "batch_size seq_len"]
     rewards: Optional[Float[torch.Tensor, "batch_size seq_len"]]
     rollout_logprobs: Optional[Float[torch.Tensor, "batch_size seq_len"]]
-    # TODO (nithinc)
-    multi_modal_inputs: Optional[List[Dict]]
+    multi_modal_inputs: Optional[TensorBatch[str, List[torch.Tensor]]]
 
 
 class TrainingInputBatch(TensorBatch[TrainingInput]):
