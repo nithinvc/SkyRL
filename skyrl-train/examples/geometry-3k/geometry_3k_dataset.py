@@ -46,6 +46,9 @@ def make_map_fn(split):
         for img in images:
             content.append({"type": "image", "image": img})
 
+        # remove, added in processor
+        problem_text = problem_text.replace("<image>", "")
+
         # Add the problem text with our question template
         content.append({"type": "text", "text": QUESTION_TEMPLATE.format(Question=problem_text)})
 

@@ -424,6 +424,20 @@ class AsyncVLLMInferenceEngine(BaseVLLMInferenceEngine):
                     lora_name=f"{lora_int_id}", lora_int_id=lora_int_id, lora_path="/dummy_lora_path"
                 )
 
+        # NOTE (nithinc) remove any of the image padding tokens already, otherwise it will be duplicated
+        # this seems? to be okay for inference but we remove it
+        # prompt_token_ids = [token for token in prompt_token_ids if token != self.llm.model_config.hf_config.image_token_id]
+        # super hacky we just remove one token
+        # prompt_token_ids_no_vision = []
+        # removed = False
+        # for token in prompt_token_ids:
+        #     if token != self.llm.model_config.hf_config.image_token_id and not removed:
+        #         removed = True
+        #     else:
+        #         prompt_token_ids_no_vision.append(token)
+        # logger.info(f"Removed {len(prompt_token_ids) - len(prompt_token_ids_no_vision)} image padding tokens")
+        # prompt_token_ids = prompt_token_ids_no_vision
+
         # Build the prompt input with optional multi-modal data
         prompt_input = TokensPrompt(prompt_token_ids=prompt_token_ids, multi_modal_data=multi_modal_data)
 
@@ -436,7 +450,6 @@ class AsyncVLLMInferenceEngine(BaseVLLMInferenceEngine):
             final_output = request_output
         # TODO (nithinc): where we should tokenize mm data
         # force a reset of the cache - this way we don't have deal with the ip caching
-        breakpoint()
         input_preprocessor = self.llm.input_processor.input_preprocessor
         input_preprocessor.clear_mm_cache()
         tokenized_out = input_preprocessor.preprocess({'prompt': prompt_token_ids, 'multi_modal_data': multi_modal_data})
@@ -448,6 +461,9 @@ class AsyncVLLMInferenceEngine(BaseVLLMInferenceEngine):
         }
         # The input preprocessor yields a new set of prompt ids that include image placeholder tokens
         updated_prompt_token_ids = list(tokenized_out['prompt_token_ids'])
+        num_vision_pad = sum([tok == self.llm.model_config.hf_config.image_token_id for tok in updated_prompt_token_ids])
+
+        logger.info(f"Updated prompt length: {len(updated_prompt_token_ids)}, num vision pad: {num_vision_pad}, expected: {multi_modal_inputs['pixel_values'].shape[0] / 4 }")
         return final_output, multi_modal_inputs, updated_prompt_token_ids
 
     async def generate(self, input_batch: InferenceEngineInput) -> InferenceEngineOutput:

@@ -142,6 +142,11 @@ class PromptDataset:
             if images:
                 multi_modal_data = {"image": images[0]} if len(images) == 1 else {"image": images}
 
+        for m in messages:
+            for content in m["content"]:
+                if 'image' in content and content['image'] is None:
+                    content.pop('image')
+
         return messages, env_class, extra, uid, multi_modal_data
 
     def collate_fn(self, item_list):
