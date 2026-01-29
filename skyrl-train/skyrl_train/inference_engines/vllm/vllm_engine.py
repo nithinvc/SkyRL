@@ -434,7 +434,19 @@ class AsyncVLLMInferenceEngine(BaseVLLMInferenceEngine):
         ):
             final_output = request_output
         # TODO (nithinc): where we should tokenize mm data
-
+        # force a reset of the cache - this way we don't have deal with the ip caching
+        input_preprocessor = self.llm.input_processor.input_preprocessor
+        input_preprocessor.clear_mm_cache()
+        tokenized_out = input_preprocessor.preprocess({'prompt': prompt_token_ids, 'multi_modal_data': multi_modal_data})
+        # TODO (nithinc): right now this only supports images and only one image
+        image_mm_kwargs = tokenized_out['mm_kwargs']['image'][0]
+        multi_modal_inputs = {
+            'pixel_values': image_mm_kwargs['pixel_values'].data,
+            'image_grid_thw': image_mm_kwargs['image_grid_thw'].data,
+        }
+        # TODO (nithinc) the input preprocessor also yields a new set of prompt ids, which take into account the image itself
+        # that is, padding for image tokens
+        updated_prompt_token_ids = tokenized_out['prompt_token_ids']
         return final_output, multi_modal_inputs
 
     async def generate(self, input_batch: InferenceEngineInput) -> InferenceEngineOutput:
