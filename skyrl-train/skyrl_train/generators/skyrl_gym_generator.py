@@ -571,6 +571,7 @@ class SkyRLGymGenerator(GeneratorInterface):
         env_extras: List[Dict[str, Any]],
         max_tokens: int,
         sampling_params: Optional[Dict[str, Any]] = None,
+        multi_modal_data: Optional[List[Dict[str, Any]]] = None,
     ) -> GeneratorOutput:
         """
         Single-turn batched generation (can use the synchronous offline engine)
@@ -582,6 +583,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             max_tokens: int
             max_input_length: int --> Currently unused as we assume batched is used only for single-turn.
             sampling_params: Optional[Dict[str, Any]]
+            multi_modal_data: Optional[List[Dict[str, Any]]]
         Returns:
             GeneratorOutput
         """
@@ -665,6 +667,8 @@ class SkyRLGymGenerator(GeneratorInterface):
         env_classes = input_batch["env_classes"]
         env_extras = input_batch["env_extras"]
         trajectory_ids = input_batch.get("trajectory_ids", None)
+        multi_modal_data = input_batch["multi_modal_data"]
+
         if self.generator_cfg.step_wise_trajectories:
             assert trajectory_ids is not None, "`trajectory_ids` is a required field for step wise training"
         sampling_params: Optional[dict] = input_batch.get("sampling_params", None)
@@ -672,7 +676,7 @@ class SkyRLGymGenerator(GeneratorInterface):
         max_input_length = self.generator_cfg.max_input_length
 
         if self.batched:
-            return await self.generate_batched(prompts, env_classes, env_extras, max_tokens, sampling_params)
+            return await self.generate_batched(prompts, env_classes, env_extras, max_tokens, sampling_params, multi_modal_data)
 
         # Async agent loop to generate trajectories in parallel.
         tasks = []
