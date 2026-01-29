@@ -36,9 +36,9 @@ uv run --isolated --extra $INFERENCE_BACKEND -m skyrl_train.entrypoints.main_bas
   trainer.update_epochs_per_batch=1 \
   trainer.train_batch_size=64 \
   trainer.policy_mini_batch_size=32 \
-  trainer.micro_forward_batch_size_per_gpu=4 \
-  trainer.micro_train_batch_size_per_gpu=4 \
-  trainer.use_sample_packing=false \
+  trainer.micro_forward_batch_size_per_gpu=8 \
+  trainer.micro_train_batch_size_per_gpu=2 \
+  trainer.use_sample_packing=true \
   trainer.ckpt_interval=5 \
   trainer.max_prompt_length=1024 \
   generator.sampling_params.max_generate_length=1024 \
