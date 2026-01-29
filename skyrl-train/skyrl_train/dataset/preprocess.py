@@ -1,4 +1,4 @@
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 import torch
 from transformers import AutoTokenizer
 from jaxtyping import Float

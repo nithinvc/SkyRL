@@ -73,6 +73,7 @@ class InferenceEngineClient(InferenceEngineInterface):
         prompt_token_ids = input_batch.get("prompt_token_ids")
         session_ids = input_batch.get("session_ids")
         sampling_params = input_batch.get("sampling_params")
+        multi_modal_data = input_batch.get("multi_modal_data")
 
         if (prompts is None and prompt_token_ids is None) or (prompts is not None and prompt_token_ids is not None):
             raise ValueError("Either `prompts` or `prompt_token_ids` must be provided, but not both.")
@@ -119,9 +120,14 @@ class InferenceEngineClient(InferenceEngineInterface):
         for engine_idx, prompt_ids in engine_idx_to_prompt_ids.items():
             # index prompt_token_ids with prompt_ids
             cur_prompt_token_ids = [prompt_token_ids[i] for i in prompt_ids]
+            # Slice multi_modal_data for this engine's prompts
+            cur_multi_modal_data = None
+            if multi_modal_data is not None:
+                cur_multi_modal_data = [multi_modal_data[i] for i in prompt_ids]
             engine_input = InferenceEngineInput(
                 prompt_token_ids=cur_prompt_token_ids,
                 sampling_params=sampling_params,
+                multi_modal_data=cur_multi_modal_data,
             )
             tasks.append(asyncio.create_task(self.engines[engine_idx].generate(engine_input)))
             indices_list.append(prompt_ids)
@@ -134,8 +140,10 @@ class InferenceEngineClient(InferenceEngineInterface):
         stop_reasons: list[str] = [""] * n
         response_logprobs: List[Optional[List[float]]] = [None for _ in range(n)]
         response_ids: List[List[int]] = [[] for _ in range(n)]
+        multi_modal_inputs: List[Optional[Dict[str, Any]]] = [None for _ in range(n)]
         # a bit hacky for now
         add_resp_logprobs = False
+        has_multi_modal_inputs = False
 
         for indices, result in zip(indices_list, results):
             for local_idx, original_idx in enumerate(indices):
@@ -145,12 +153,17 @@ class InferenceEngineClient(InferenceEngineInterface):
                 if result.get("response_logprobs", None):
                     add_resp_logprobs = True
                     response_logprobs[original_idx] = result["response_logprobs"][local_idx]
+                if result.get("multi_modal_inputs", None):
+                    has_multi_modal_inputs = True
+                    multi_modal_inputs[original_idx] = result["multi_modal_inputs"][local_idx]
 
         return InferenceEngineOutput(
             responses=responses,
             stop_reasons=stop_reasons,
             response_ids=response_ids,
             response_logprobs=response_logprobs if add_resp_logprobs else None,
+            multi_modal_data=multi_modal_data,
+            multi_modal_inputs=multi_modal_inputs if has_multi_modal_inputs else None,
         )
 
     async def _generate_single_with_retry(

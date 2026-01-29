@@ -598,7 +598,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             envs.append(env)
 
         # For single-turn generation, we can use text-in-token-out, since we do not need to re-tokenize.
-        engine_input = InferenceEngineInput(prompts=init_prompts, sampling_params=sampling_params)
+        engine_input = InferenceEngineInput(prompts=init_prompts, sampling_params=sampling_params, multi_modal_data=multi_modal_data)
         engine_output = await self.inference_engine_client.generate(engine_input)
         outputs = engine_output["responses"]
         responses = engine_output["response_ids"]

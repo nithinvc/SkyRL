@@ -68,6 +68,7 @@ class PromptDataset:
         self.prompt_key = prompt_key
         self.env_class_key = env_class_key
         self.num_workers = num_workers
+        self.processor = processor
 
         self.datasets = datasets
         if isinstance(self.datasets, str):

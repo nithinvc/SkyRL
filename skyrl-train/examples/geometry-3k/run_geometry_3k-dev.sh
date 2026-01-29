@@ -17,7 +17,7 @@ set -x
 # : "${LOGGER:=wandb}"
 : "${INFERENCE_BACKEND:=vllm}"
 
-uv run --isolated --extra $INFERENCE_BACKEND --extra ipdb -m skyrl_train.entrypoints.main_base \
+uv run --isolated --extra $INFERENCE_BACKEND -m skyrl_train.entrypoints.main_base \
   data.train_data="['$DATA_DIR/train-dev.parquet']" \
   data.val_data="['$DATA_DIR/test.parquet']" \
   trainer.algorithm.advantage_estimator="grpo" \
