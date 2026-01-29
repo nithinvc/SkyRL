@@ -141,9 +141,11 @@ class InferenceEngineClient(InferenceEngineInterface):
         response_logprobs: List[Optional[List[float]]] = [None for _ in range(n)]
         response_ids: List[List[int]] = [[] for _ in range(n)]
         multi_modal_inputs: List[Optional[Dict[str, Any]]] = [None for _ in range(n)]
+        updated_prompt_token_ids: List[Optional[List[int]]] = [None for _ in range(n)]
         # a bit hacky for now
         add_resp_logprobs = False
         has_multi_modal_inputs = False
+        has_updated_prompt_token_ids = False
 
         for indices, result in zip(indices_list, results):
             for local_idx, original_idx in enumerate(indices):
@@ -156,6 +158,9 @@ class InferenceEngineClient(InferenceEngineInterface):
                 if result.get("multi_modal_inputs", None):
                     has_multi_modal_inputs = True
                     multi_modal_inputs[original_idx] = result["multi_modal_inputs"][local_idx]
+                if result.get("prompt_token_ids", None):
+                    has_updated_prompt_token_ids = True
+                    updated_prompt_token_ids[original_idx] = result["prompt_token_ids"][local_idx]
 
         return InferenceEngineOutput(
             responses=responses,
@@ -164,6 +169,7 @@ class InferenceEngineClient(InferenceEngineInterface):
             response_logprobs=response_logprobs if add_resp_logprobs else None,
             multi_modal_data=multi_modal_data,
             multi_modal_inputs=multi_modal_inputs if has_multi_modal_inputs else None,
+            prompt_token_ids=updated_prompt_token_ids if has_updated_prompt_token_ids else None,
         )
 
     async def _generate_single_with_retry(

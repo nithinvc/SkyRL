@@ -221,6 +221,7 @@ class BaseVLLMInferenceEngine(InferenceEngineInterface):
             response_logprobs=response_logprobs,
             multi_modal_data=None,
             multi_modal_inputs=None,
+            prompt_token_ids=None,
         )
 
     def _get_engine(self):
@@ -444,10 +445,9 @@ class AsyncVLLMInferenceEngine(BaseVLLMInferenceEngine):
             'pixel_values': image_mm_kwargs['pixel_values'].data,
             'image_grid_thw': image_mm_kwargs['image_grid_thw'].data,
         }
-        # TODO (nithinc) the input preprocessor also yields a new set of prompt ids, which take into account the image itself
-        # that is, padding for image tokens
-        updated_prompt_token_ids = tokenized_out['prompt_token_ids']
-        return final_output, multi_modal_inputs
+        # The input preprocessor yields a new set of prompt ids that include image placeholder tokens
+        updated_prompt_token_ids = list(tokenized_out['prompt_token_ids'])
+        return final_output, multi_modal_inputs, updated_prompt_token_ids
 
     async def generate(self, input_batch: InferenceEngineInput) -> InferenceEngineOutput:
         """Generate responses using vLLM's async engine."""
@@ -465,14 +465,16 @@ class AsyncVLLMInferenceEngine(BaseVLLMInferenceEngine):
             tasks.append(task)
         results = await asyncio.gather(*tasks)
 
-        # Separate outputs and multi_modal_inputs from results
+        # Separate outputs, multi_modal_inputs, and updated_prompt_token_ids from results
         outputs = [r[0] for r in results]
         multi_modal_inputs_list = [r[1] for r in results]
+        updated_prompt_token_ids_list = [r[2] for r in results]
 
         output = self._postprocess_outputs(outputs)
-        # Add multi_modal_inputs to the output
+        # Add multi_modal_inputs and updated prompt_token_ids to the output
         output["multi_modal_inputs"] = multi_modal_inputs_list if any(mm is not None for mm in multi_modal_inputs_list) else None
         output["multi_modal_data"] = multi_modal_data
+        output["prompt_token_ids"] = updated_prompt_token_ids_list if any(p is not None for p in updated_prompt_token_ids_list) else None
         return output
 
     async def wake_up(self, *args: Any, **kwargs: Any):

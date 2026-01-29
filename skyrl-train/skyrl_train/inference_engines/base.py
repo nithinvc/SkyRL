@@ -35,6 +35,8 @@ class InferenceEngineOutput(TypedDict):
     # we let the inference backend compute the tokenized representation of multi-modal inputs
     multi_modal_data: Optional[List[Dict[str, Any]]]
     multi_modal_inputs: Optional[List[Dict[str, Any]]]
+    # Updated prompt token IDs that include image placeholder tokens (from VLM preprocessing)
+    prompt_token_ids: Optional[List[List[int]]]
 
 
 class InferenceEngineInterface(ABC):

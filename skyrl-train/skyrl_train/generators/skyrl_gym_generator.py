@@ -604,6 +604,9 @@ class SkyRLGymGenerator(GeneratorInterface):
         responses = engine_output["response_ids"]
         stop_reasons = engine_output["stop_reasons"]
         logprobs = engine_output.get("response_logprobs", None)
+        # Get multi_modal_inputs and updated prompt_token_ids from engine (includes image tokens)
+        engine_multi_modal_inputs = engine_output.get("multi_modal_inputs", None)
+        engine_prompt_token_ids = engine_output.get("prompt_token_ids", None)
 
         truncated_responses = []
         rewards = []
@@ -630,11 +633,16 @@ class SkyRLGymGenerator(GeneratorInterface):
             # Close the environment
             await self._run_in_executor_if_available(env.close)
 
-        prompt_token_ids = self.tokenizer.apply_chat_template(
-            init_prompts,
-            add_generation_prompt=True,
-            tokenize=True,
-        )
+        # Use updated prompt_token_ids from engine if available (includes image placeholder tokens),
+        # otherwise fall back to tokenizer
+        if engine_prompt_token_ids is not None:
+            prompt_token_ids = engine_prompt_token_ids
+        else:
+            prompt_token_ids = self.tokenizer.apply_chat_template(
+                init_prompts,
+                add_generation_prompt=True,
+                tokenize=True,
+            )
         rollout_metrics = get_rollout_metrics(responses, rewards, env_metrics, env_classes)
 
         if self.generator_cfg.apply_overlong_filtering:
@@ -648,6 +656,8 @@ class SkyRLGymGenerator(GeneratorInterface):
             "stop_reasons": stop_reasons,
             "rollout_metrics": rollout_metrics,
             "rollout_logprobs": truncated_logprobs,
+            "multi_modal_data": multi_modal_data,
+            "multi_modal_inputs": engine_multi_modal_inputs,
         }
 
         return generator_output
@@ -770,6 +780,9 @@ class SkyRLGymGenerator(GeneratorInterface):
             "rollout_logprobs": rollout_logprobs,
             "trajectory_ids": out_trajectory_ids,
             "is_last_step": is_last_step,
+            # Multi-modal data is not yet supported in non-batched agent_loop path
+            "multi_modal_data": None,
+            "multi_modal_inputs": None,
         }
 
         return generator_output
