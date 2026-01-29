@@ -70,6 +70,7 @@ class Experience:
     info: Optional[dict]
     kl: Optional[Float[torch.Tensor, "batch response_len"]] = None
     metadata: Optional[Dict[str, Any]] = None
+    multi_modal_inputs: Optional[Any] = None  # TensorBatch with pixel_values, image_grid_thw for VLM
 
     @torch.no_grad()
     def to_device(self, device: torch.device) -> None:
@@ -91,6 +92,9 @@ class Experience:
             self.action_mask = to(self.action_mask, device)
         if self.rollout_logprobs is not None:
             self.rollout_logprobs = to(self.rollout_logprobs, device)
+        if self.multi_modal_inputs is not None:
+            # TensorBatch has a .to() method that handles nested tensors
+            self.multi_modal_inputs = self.multi_modal_inputs.to(device)
 
     def pin_memory(self):
         self.sequences = pin_memory(self.sequences)

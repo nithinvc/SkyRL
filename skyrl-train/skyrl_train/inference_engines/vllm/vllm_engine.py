@@ -436,6 +436,7 @@ class AsyncVLLMInferenceEngine(BaseVLLMInferenceEngine):
             final_output = request_output
         # TODO (nithinc): where we should tokenize mm data
         # force a reset of the cache - this way we don't have deal with the ip caching
+        breakpoint()
         input_preprocessor = self.llm.input_processor.input_preprocessor
         input_preprocessor.clear_mm_cache()
         tokenized_out = input_preprocessor.preprocess({'prompt': prompt_token_ids, 'multi_modal_data': multi_modal_data})

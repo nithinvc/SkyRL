@@ -708,6 +708,7 @@ class PolicyWorkerBase(Worker):
         attention_mask = experience.attention_mask
         loss_mask = experience.loss_mask
         rollout_action_logprobs = experience.rollout_logprobs
+        multi_modal_inputs = experience.multi_modal_inputs
 
         # TODO (sumanthrh): don't think this does anything for fsdp rn because autocast happens internally
         with torch.autocast(dtype=torch.bfloat16, device_type="cuda"):
@@ -720,6 +721,7 @@ class PolicyWorkerBase(Worker):
                 return_output=True,
                 compute_entropy=True,
                 entropy_requires_grad=self.cfg.trainer.algorithm.use_entropy_loss,
+                multi_modal_inputs=multi_modal_inputs,
             )
             # loss function
             # TODO: recompute advantages
@@ -1093,8 +1095,15 @@ class RefWorkerBase(Worker):
         sequences = micro_batch["sequences"]
         response_length = micro_batch.metadata["response_length"]
         attention_mask = micro_batch["attention_mask"]
+        multi_modal_inputs = micro_batch.get("multi_modal_inputs", None)
         with torch.no_grad(), torch.autocast(dtype=torch.bfloat16, device_type="cuda"):
-            log_probs = self.model(sequences, response_length, attention_mask, return_output=False)
+            log_probs = self.model(
+                sequences,
+                response_length,
+                attention_mask,
+                return_output=False,
+                multi_modal_inputs=multi_modal_inputs,
+            )
         log_probs = log_probs.to("cpu")
         output = TrainingOutputBatch(
             {"output": log_probs},

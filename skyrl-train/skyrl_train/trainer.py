@@ -37,7 +37,7 @@ from skyrl_train.generators.utils import (
 )
 from skyrl_train.inference_engines.inference_engine_client import InferenceEngineClient
 from skyrl_train.inference_engines.utils import get_sampling_params_for_backend
-from skyrl_train.training_batch import TrainingInputBatch
+from skyrl_train.training_batch import TensorBatch, TrainingInputBatch
 from skyrl_train.utils import (
     Timer,
     get_ray_pg_ready_with_timeout,
@@ -871,20 +871,28 @@ class RayPPOTrainer:
         training_input.metadata["pad_size"] = pad_size
         if pad_size == 0:
             return training_input
-        for key, tensor in training_input.items():
-            if tensor is not None:
-                additional_dims = tuple(tensor.shape[1:]) if len(tensor.shape) > 1 else ()
-
-                if key == "is_last_step":
-                    padding_tensor = torch.ones(pad_size, *additional_dims, dtype=tensor.dtype, device=tensor.device)
-                elif key == "loss_mask":
-                    # ensures that padding tensors don't count towards the loss
-                    padding_tensor = torch.zeros(pad_size, *additional_dims, dtype=tensor.dtype, device=tensor.device)
+        for key, value in training_input.items():
+            if value is not None:
+                # Handle TensorBatch (e.g., multi_modal_inputs) specially
+                if isinstance(value, TensorBatch):
+                    # For TensorBatch, use slice and cat methods
+                    padding_batch = value.slice(0, pad_size)
+                    new_tensors[key] = TensorBatch.cat([value, padding_batch])
                 else:
-                    # ensures all padding tensors are in a valid format by cloning `pad_size` from the original input
-                    # `pad_size` is guaranteed to be smaller than batch_size
-                    padding_tensor = tensor[:pad_size].clone()
-                new_tensors[key] = torch.cat([tensor, padding_tensor], dim=0)
+                    # Handle regular tensors
+                    tensor = value
+                    additional_dims = tuple(tensor.shape[1:]) if len(tensor.shape) > 1 else ()
+
+                    if key == "is_last_step":
+                        padding_tensor = torch.ones(pad_size, *additional_dims, dtype=tensor.dtype, device=tensor.device)
+                    elif key == "loss_mask":
+                        # ensures that padding tensors don't count towards the loss
+                        padding_tensor = torch.zeros(pad_size, *additional_dims, dtype=tensor.dtype, device=tensor.device)
+                    else:
+                        # ensures all padding tensors are in a valid format by cloning `pad_size` from the original input
+                        # `pad_size` is guaranteed to be smaller than batch_size
+                        padding_tensor = tensor[:pad_size].clone()
+                    new_tensors[key] = torch.cat([tensor, padding_tensor], dim=0)
 
         new_training_input = TrainingInputBatch(new_tensors)
         new_training_input.metadata = {}

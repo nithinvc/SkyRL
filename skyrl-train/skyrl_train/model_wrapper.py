@@ -289,6 +289,15 @@ class HFModelWrapper(nn.Module):
         multi_modal_inputs: Dict = None,  # TODO (nithinc) update as we see this
     ) -> torch.Tensor:
         """Returns action log probs"""
+        # TODO (nithinc) - hardcoded for the img case
+        if multi_modal_inputs is not None:
+            multi_modal_inputs_tensor = {
+                # packed pixel vals
+                'pixel_values': torch.cat(multi_modal_inputs['pixel_values'], dim=0),
+                # batched image grids
+                'image_grid_thw': torch.stack(multi_modal_inputs['image_grid_thw']),
+            }
+    
         position_ids = attention_mask.long().cumsum(-1) - 1
         position_ids.masked_fill_(attention_mask == 0, 1)
 
@@ -323,13 +332,14 @@ class HFModelWrapper(nn.Module):
             )
 
         # NOTE (sumanthrh): Once we have position_ids, we don't need attention mask with flash attention.
+        # breakpoint()
         if self.use_sample_packing and self.attn_implementation == "flash_attention_2":
             # NOTE (sumanthrh): Don't use attention mask. position_ids is enough.
             # Not using attention mask leads to higher perf since flash attention varlen func is enabled
             # TODO (nithinc): not sure if sample packing works with mm inputs? It already is sample packed?
-            output = self.model(sequences_fwd, attention_mask=None, position_ids=position_ids_fwd, **multi_modal_inputs)
+            output = self.model(sequences_fwd, attention_mask=None, position_ids=position_ids_fwd, **multi_modal_inputs_tensor)
         else:
-            output = self.model(sequences_fwd, attention_mask=attention_mask_fwd, position_ids=position_ids_fwd, **multi_modal_inputs)
+            output = self.model(sequences_fwd, attention_mask=attention_mask_fwd, position_ids=position_ids_fwd, **multi_modal_inputs_tensor)
 
         logits_BSV = output["logits"]
         logits_BSV.div_(temperature)

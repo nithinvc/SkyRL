@@ -67,5 +67,7 @@ class BatchIterator:
             info={},
             # propagate metadata as is
             metadata=batch.metadata,
+            # multi-modal inputs for VLM training (pixel_values, image_grid_thw)
+            multi_modal_inputs=batch.get("multi_modal_inputs", None),
         )
         return exp
