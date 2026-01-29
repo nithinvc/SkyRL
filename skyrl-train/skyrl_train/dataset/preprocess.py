@@ -40,7 +40,7 @@ def convert_prompts_responses_to_batch_tensors(
     Float[torch.Tensor, "batch response_len"],
     Float[torch.Tensor, "batch response_len"],
     Optional[Float[torch.Tensor, "batch response_len"]],
-    Optional[List[Dict]],
+    Optional[Dict[str, List[torch.Tensor]]],
 ]:
     """
     Convert prompts and responses to batch tensors for training.
@@ -68,6 +68,8 @@ def convert_prompts_responses_to_batch_tensors(
         action_mask: Response mask for the model. Size: (batch, response_len)
         rewards: Rewards for each output. Size: (batch, response_len)
         loss_masks: Loss masks for each output. Size: (batch, response_len)
+        multi_modal_inputs: Multi-modal inputs for each output. 
+            This is a dict with str keys -> list[torch.Tensor]
     """
     _verify_inputs(prompts, responses, rewards, loss_masks)
 
@@ -133,7 +135,12 @@ def convert_prompts_responses_to_batch_tensors(
 
     multi_modal_inputs_tensor = None
     if multi_modal_inputs:
-        # TODO (nithinc)
-        multi_modal_inputs_tensor = multi_modal_inputs
+        from collections import defaultdict
+        multi_modal_inputs_tensor = defaultdict(list)
+        for mm_input in multi_modal_inputs:
+            for key, value in mm_input.items():
+                multi_modal_inputs_tensor[key].append(torch.tensor(value))
+        from skyrl_train.training_batch import TensorBatch
+        multi_modal_inputs_tensor = TensorBatch(**multi_modal_inputs_tensor)
 
     return sequences, attention_mask, action_mask, ret_rewards, ret_loss_masks, logprobs_tensor, multi_modal_inputs_tensor
