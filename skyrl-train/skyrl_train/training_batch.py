@@ -333,6 +333,8 @@ class TrainingInput(TypedDict, total=False):
     kl: Float[torch.Tensor, "batch_size seq_len"]
     rewards: Optional[Float[torch.Tensor, "batch_size seq_len"]]
     rollout_logprobs: Optional[Float[torch.Tensor, "batch_size seq_len"]]
+    # TODO (nithinc)
+    multi_modal_inputs: Optional[List[Dict]]
 
 
 class TrainingInputBatch(TensorBatch[TrainingInput]):

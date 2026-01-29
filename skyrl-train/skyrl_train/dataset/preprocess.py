@@ -32,6 +32,7 @@ def convert_prompts_responses_to_batch_tensors(
     rewards: List[List[float]],
     loss_masks: List[List[int]],
     logprobs: Optional[List[List[float]]] = None,
+    multi_modal_inputs: List[Dict] = None,
 ) -> Tuple[
     Float[torch.Tensor, "batch seq_len"],
     Float[torch.Tensor, "batch seq_len"],
@@ -39,6 +40,7 @@ def convert_prompts_responses_to_batch_tensors(
     Float[torch.Tensor, "batch response_len"],
     Float[torch.Tensor, "batch response_len"],
     Optional[Float[torch.Tensor, "batch response_len"]],
+    Optional[List[Dict]],
 ]:
     """
     Convert prompts and responses to batch tensors for training.
@@ -129,4 +131,9 @@ def convert_prompts_responses_to_batch_tensors(
         ]
         logprobs_tensor = torch.tensor(padded_logprobs, dtype=torch.float)
 
-    return sequences, attention_mask, action_mask, ret_rewards, ret_loss_masks, logprobs_tensor
+    multi_modal_inputs_tensor = None
+    if multi_modal_inputs:
+        # TODO (nithinc)
+        multi_modal_inputs_tensor = multi_modal_inputs
+
+    return sequences, attention_mask, action_mask, ret_rewards, ret_loss_masks, logprobs_tensor, multi_modal_inputs_tensor

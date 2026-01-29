@@ -587,6 +587,8 @@ class RayPPOTrainer:
         response_ids: List[List[int]] = generator_output["response_ids"]
         rewards: List[List[float]] = generator_output["rewards"]
         loss_masks: List[List[int]] = generator_output["loss_masks"]
+        # TODO (nithinc)
+        multi_modal_inputs: List[Dict] = generator_output["multi_modal_inputs"]
 
         logprobs: Optional[List[List[float]]] = generator_output.get("rollout_logprobs", None)
 
@@ -597,6 +599,7 @@ class RayPPOTrainer:
             rewards_tensor,
             loss_masks_tensor,
             rollout_logprobs_tensor,
+            multi_modal_inputs_tensor,
         ) = convert_prompts_responses_to_batch_tensors(
             self.tokenizer,
             prompt_ids,
@@ -604,6 +607,7 @@ class RayPPOTrainer:
             rewards,
             loss_masks,
             logprobs,
+            multi_modal_inputs,
         )
         # sanity check for tis
         if self.cfg.trainer.algorithm.use_tis:
@@ -624,6 +628,7 @@ class RayPPOTrainer:
                     if generator_output.get("is_last_step", None) is not None
                     else None
                 ),
+                "multi_modal_inputs": multi_modal_inputs_tensor,
             },
         )
         training_input.metadata = {"uids": uids}
@@ -913,7 +918,7 @@ class RayPPOTrainer:
             - `["action_log_probs"]`: Float[torch.Tensor, "batch_size seqlen"]
             - `["values"]`: Float[torch.Tensor, "batch_size seqlen"]
         """
-        data_fwd_pass = training_input.select(keys=["sequences", "attention_mask"], metadata_keys=["response_length"])
+        data_fwd_pass = training_input.select(keys=["sequences", "attention_mask", "multi_modal_inputs"], metadata_keys=["response_length"])
 
         values = None
         base_log_probs = None

@@ -359,6 +359,8 @@ def prepare_generator_input(
     """
 
     all_prompts = [prompt["prompt"] for prompt in prompts for _ in range(n_samples_per_prompt)]
+    all_multi_modal_data = [prompt["multi_modal_data"] for prompt in prompts for _ in range(n_samples_per_prompt)]
+
 
     all_envs = [
         prompt["env_class"] if prompt["env_class"] is not None else default_env_class
@@ -387,6 +389,7 @@ def prepare_generator_input(
         "sampling_params": sampling_params,
         "trajectory_ids": trajectory_ids,
         "batch_metadata": BatchMetadata(global_step=global_step, training_phase=training_phase),
+        "multi_modal_data": all_multi_modal_data,
     }
 
     return generator_input, uids

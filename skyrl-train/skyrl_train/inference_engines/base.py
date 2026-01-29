@@ -15,6 +15,9 @@ class InferenceEngineInput(TypedDict):
     prompt_token_ids: Optional[List[List[int]]]
     sampling_params: Optional[Dict[str, Any]]
     session_ids: Optional[List[Hashable]]
+    # raw mm inputs
+    multi_modal_data: Optional[List[Dict[str, Any]]]
+
 
 
 class InferenceEngineOutput(TypedDict):
@@ -29,6 +32,9 @@ class InferenceEngineOutput(TypedDict):
     response_ids: List[List[int]]
     stop_reasons: List[str]
     response_logprobs: Optional[List[List[float]]]
+    # we let the inference backend compute the tokenized representation of multi-modal inputs
+    multi_modal_data: Optional[List[Dict[str, Any]]]
+    multi_modal_inputs: Optional[List[Dict[str, Any]]]
 
 
 class InferenceEngineInterface(ABC):

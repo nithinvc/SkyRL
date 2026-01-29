@@ -4,7 +4,7 @@ Main entrypoint for training.
 
 from ray.util.placement_group import placement_group, PlacementGroup
 
-from transformers import AutoTokenizer, PreTrainedTokenizerBase
+from transformers import AutoTokenizer, PreTrainedTokenizerBase, AutoProcessor, AutoConfig
 from skyrl_train.dataset import PromptDataset
 from skyrl_train.utils import validate_cfg
 
@@ -110,7 +110,7 @@ class BasePPOExp:
         The `cfg` passed here will be the final config from Hydra, including CLI overrides.
         """
         self.cfg = cfg
-        self.tokenizer = self.get_tokenizer()
+        self.tokenizer, self.processor = self.get_tokenizer()
         self.train_dataset = self.get_train_dataset()
         self.eval_dataset = self.get_eval_dataset()
         self.colocate_pg = self.get_colocate_pg()
@@ -119,18 +119,40 @@ class BasePPOExp:
     def get_cfg_as_str(dict_cfg: DictConfig) -> str:
         return OmegaConf.to_yaml(dict_cfg)
 
+    def _is_vlm_model(self, model_path: str) -> bool:
+        """Check if the model is a Vision-Language Model by inspecting its config."""
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        # VLM models have composite configs with vision_config and text_config
+        # Common VLM model types: qwen2_vl, qwen3_vl, llava, etc.
+        is_vlm = hasattr(config, "vision_config") and hasattr(config, "text_config")
+        if is_vlm:
+            logger.info(f"Detected VLM model: {config.model_type}")
+        return is_vlm
+
     def get_tokenizer(self, padding_side="left"):
         """Initializes a tokenizer for the given model."""
-        tokenizer = AutoTokenizer.from_pretrained(
-            self.cfg.trainer.policy.model.path,
-            trust_remote_code=True,
-            use_fast=not self.cfg.trainer.disable_fast_tokenizer,
-        )
+        processor = None
+        model_path = self.cfg.trainer.policy.model.path
+
+        # Detect VLM models and use processor for multi-modal support
+        if self._is_vlm_model(model_path):
+            processor = AutoProcessor.from_pretrained(
+                model_path,
+                trust_remote_code=True,
+            )
+            tokenizer = processor.tokenizer
+            logger.info(f"Initialized AutoProcessor for VLM model: {model_path}")
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_path,
+                trust_remote_code=True,
+                use_fast=not self.cfg.trainer.disable_fast_tokenizer,
+            )
         tokenizer.padding_side = padding_side
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
             tokenizer.pad_token_id = tokenizer.eos_token_id
-        return tokenizer
+        return tokenizer, processor
 
     def get_train_dataset(self):
         """Initializes the training dataset.
@@ -143,6 +165,7 @@ class BasePPOExp:
             tokenizer=self.tokenizer,
             max_prompt_length=self.cfg.trainer.max_prompt_length,
             num_workers=8,
+            processor=self.processor,
         )
         # make sure the dataset is large enough to train on
         assert (
@@ -162,6 +185,7 @@ class BasePPOExp:
                 tokenizer=self.tokenizer,
                 max_prompt_length=self.cfg.trainer.max_prompt_length,
                 num_workers=8,
+                processor=self.processor,
             )
             return prompts_dataset
         return None
@@ -304,6 +328,14 @@ class BasePPOExp:
 @ray.remote(num_cpus=1)
 def skyrl_entrypoint(cfg: DictConfig):
     # make sure that the training loop is not run on the head node.
+    from skyrl_gym.envs import register
+
+    # Register custom environments inside the entrypoint task (no need to modify the skyrl-gym package).
+    register(
+        id="geometry-3k",
+        entry_point="examples.geometry-3k.env:Geometry3kEnv",
+    )
+
     exp = BasePPOExp(cfg)
     exp.run()
 

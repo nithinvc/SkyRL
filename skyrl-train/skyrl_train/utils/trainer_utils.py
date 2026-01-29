@@ -17,6 +17,9 @@ from pathlib import Path
 from skyrl_train.utils.io import io
 from skyrl_train.dataset import PromptDataset
 from torchdata.stateful_dataloader import StatefulDataLoader
+import base64
+from io import BytesIO
+from PIL import Image
 
 BasicType = Union[int, float, str, bool, type(None)]
 
@@ -193,6 +196,52 @@ def sanitize_data_source(data_source: str) -> str:
         return "unknown"
     return data_source.replace("/", "_")
 
+def _sanitize_value(value: Any) -> Any:
+    """Recursively sanitize a value, converting PIL Images to base64 strings.
+    Args:
+        value: Any value that may be or contain PIL Image objects
+    Returns:
+        Sanitized value with PIL Images converted to base64 strings
+    """
+    if value is None:
+        return None
+
+    # Check if the value is a PIL Image
+    if isinstance(value, Image.Image):
+        # Convert PIL Image to base64
+        buffer = BytesIO()
+        # Save image to buffer in PNG format to preserve quality
+        value.save(buffer, format="PNG")
+        buffer.seek(0)
+        # Encode to base64
+        return base64.b64encode(buffer.read()).decode("utf-8")
+
+    # Handle lists recursively
+    if isinstance(value, list):
+        return [_sanitize_value(item) for item in value]
+
+    # Handle tuples recursively (convert to list since JSON doesn't have tuples)
+    if isinstance(value, tuple):
+        return [_sanitize_value(item) for item in value]
+
+    # Handle dicts recursively
+    if isinstance(value, dict):
+        return {k: _sanitize_value(v) for k, v in value.items()}
+
+    return value
+
+
+def sanitize_env_extras(env_extras: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitizes env extras by converting PIL Images to base64 encoded strings.
+    Args:
+        env_extras: Dictionary that may contain PIL Image objects (including nested)
+    Returns:
+        Copy of the dictionary with PIL Images converted to base64 strings
+    """
+    if env_extras is None:
+        return None
+
+    return _sanitize_value(env_extras)
 
 def calculate_per_dataset_metrics(
     concat_generator_outputs: GeneratorOutput,
@@ -271,7 +320,7 @@ def dump_per_dataset_eval_results(
                     "score": concat_generator_outputs["rewards"][i],
                     "stop_reason": concat_generator_outputs.get("stop_reasons", [None] * len(input_prompts))[i],
                     "env_class": concat_all_envs[i],
-                    "env_extras": concat_env_extras[i],
+                    "env_extras": sanitize_env_extras(concat_env_extras[i]), 
                     "data_source": data_source,
                 }
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")

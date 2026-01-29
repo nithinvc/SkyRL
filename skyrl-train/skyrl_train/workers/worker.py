@@ -856,6 +856,7 @@ class PolicyWorkerBase(Worker):
         sequences = micro_batch["sequences"]
         response_length = micro_batch.metadata["response_length"]
         attention_mask = micro_batch["attention_mask"]
+        multi_modal_inputs = micro_batch["multi_modal_inputs"]
 
         with torch.no_grad(), torch.autocast(dtype=torch.bfloat16, device_type="cuda"):
             policy_logprob = self.model(
@@ -864,6 +865,7 @@ class PolicyWorkerBase(Worker):
                 attention_mask,
                 return_output=False,
                 temperature=self.cfg.generator.sampling_params.temperature,
+                multi_modal_inputs=multi_modal_inputs,
             )
         policy_logprob = policy_logprob.to("cpu")
         output = TrainingOutputBatch(

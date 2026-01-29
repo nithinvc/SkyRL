@@ -2,7 +2,54 @@ import datasets
 from loguru import logger
 import os
 from typing import List
-from transformers import PreTrainedTokenizerBase
+from transformers import PreTrainedTokenizerBase, AutoProcessor
+from PIL import Image
+import io
+from typing import Any, Dict
+from copy import deepcopy
+
+def convert_bytes_to_pil_image(bytes: bytes) -> Image.Image:
+    with Image.open(io.BytesIO(bytes)) as im:
+        new_im = im.copy()
+    return new_im
+
+
+def extract_images_from_messages(messages: List[Dict[str, Any]]) -> List[Any]:
+    """Extract images from message content.
+    Images can be stored in two ways:
+    1. In message content as {"type": "image", "image": <PIL.Image>}
+    2. As a top-level "image" or "images" field in the row
+    Args:
+        messages: List of message dicts with 'role' and 'content' keys
+    Returns:
+        List of PIL Images found in the messages
+    """
+    images = []
+    for message in messages:
+        content = message.get("content", [])
+        # Content can be a string (text-only) or a list (multi-modal)
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "image":
+                    # Image is stored in the "image" key
+                    img = item.get("image")
+                    if img is not None:
+                        images.append(deepcopy(img))
+                        # convert this image to pillow
+                        item["image"] = convert_bytes_to_pil_image(img["bytes"])
+
+    return images
+
+
+def convert_to_pil_images(images: List[Any]) -> List[Image.Image]:
+    pil_images = []
+    for image in images:
+        b = image["bytes"]
+        assert b is not None, "found none bytes"
+        with Image.open(io.BytesIO(b)) as im:
+            new_im = im.copy()  # copy so the underlying buffer can be released
+        pil_images.append(new_im)
+    return pil_images
 
 
 class PromptDataset:
@@ -14,6 +61,7 @@ class PromptDataset:
         num_workers: int = 8,
         prompt_key: str = "prompt",
         env_class_key: str = "env_class",
+        processor: AutoProcessor = None,
     ):
         self.tokenizer = tokenizer
         self.max_prompt_length = max_prompt_length
@@ -73,13 +121,40 @@ class PromptDataset:
 
         extra = {key: value for key, value in row_dict.items() if key != self.prompt_key and key != self.env_class_key}
         uid = str(item)
+        multi_modal_data = {}
+        if self.processor is not None:
+            # Extract images from multiple possible sources:
+            # 1. From message content (e.g., geometry_3k format)
+            # 2. From top-level row fields (e.g., "image" or "images" column)
+            images = extract_images_from_messages(messages)
+            images = convert_to_pil_images(images)
 
-        return messages, env_class, extra, uid
+            # Fallback to top-level image fields if no images found in messages
+            if not images:
+                if "image" in row_dict and row_dict["image"] is not None:
+                    images = [row_dict["image"]]
+                elif "images" in row_dict and row_dict["images"] is not None:
+                    images = row_dict["images"] if isinstance(row_dict["images"], list) else [row_dict["images"]]
+
+            # vLLM expects multi_modal_data with "image" key for single image
+            # or list of images for multiple images
+            if images:
+                multi_modal_data = {"image": images[0]} if len(images) == 1 else {"image": images}
+
+        return messages, env_class, extra, uid, multi_modal_data
 
     def collate_fn(self, item_list):
         all_inputs = []
-        for prompt, env_class, env_extras, item_uids in item_list:
-            all_inputs.append({"prompt": prompt, "env_class": env_class, "env_extras": env_extras, "uid": item_uids})
+        for prompt, env_class, env_extras, item_uids, multi_modal_data in item_list:
+            all_inputs.append(
+                {
+                    "prompt": prompt,
+                    "env_class": env_class,
+                    "env_extras": env_extras,
+                    "uid": item_uids,
+                    "multi_modal_data": multi_modal_data,
+                }
+            )
         return all_inputs
 
     def __len__(self):

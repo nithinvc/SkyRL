@@ -3,14 +3,14 @@
 # https://github.com/OpenRLHF/OpenRLHF/blob/main/openrlhf/models/actor.py
 # https://github.com/OpenRLHF/OpenRLHF/blob/main/openrlhf/models/model.py
 
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 from loguru import logger
 from peft import LoraConfig, TaskType, get_peft_model
 from peft.tuners.lora import LoraLayer
 import transformers
-from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoProcessor, BitsAndBytesConfig
 import numpy as np
 from skyrl_train.distributed.ulysses.utils import ulysses_pad_and_slice_inputs, gather_outputs_and_unpad
 from skyrl_train.utils.torch_utils import chunked_entropy_from_logits, logprobs_from_logits
@@ -93,9 +93,28 @@ class HFModelWrapper(nn.Module):
 
                 model_class = AutoLigerKernelForCausalLM
             else:
-                model_class = AutoModelForCausalLM
+                # model_class = AutoModelForCausalLM
+                # TODO MM update to enable qwen 2.5, 3
+                # TODO (nithinc): revert this to be how we previously had
+                from transformers import Qwen3VLForConditionalGeneration
+
+                model_class = Qwen3VLForConditionalGeneration
 
             model_config = AutoConfig.from_pretrained(pretrain_or_model, trust_remote_code=True, **model_config_kwargs)
+            # For VLM models (composite configs), rope settings go in text_config
+            if hasattr(model_config, "text_config"):
+                if rope_scaling:
+                    model_config.text_config.rope_scaling = rope_scaling
+                if rope_theta:
+                    model_config.text_config.rope_theta = rope_theta
+                rope_scaling_kwargs = {}
+            else:
+                # For standard LLM models, pass rope settings to from_pretrained
+                rope_scaling_kwargs = {}
+                if rope_scaling:
+                    rope_scaling_kwargs["rope_scaling"] = rope_scaling
+                if rope_theta:
+                    rope_scaling_kwargs["rope_theta"] = rope_theta
 
             rope_scaling_kwargs = {}
             if rope_scaling:
@@ -267,6 +286,7 @@ class HFModelWrapper(nn.Module):
         return_output=False,
         compute_entropy=False,
         entropy_requires_grad=True,
+        multi_modal_inputs: Dict = None,  # TODO (nithinc) update as we see this
     ) -> torch.Tensor:
         """Returns action log probs"""
         position_ids = attention_mask.long().cumsum(-1) - 1
@@ -306,9 +326,10 @@ class HFModelWrapper(nn.Module):
         if self.use_sample_packing and self.attn_implementation == "flash_attention_2":
             # NOTE (sumanthrh): Don't use attention mask. position_ids is enough.
             # Not using attention mask leads to higher perf since flash attention varlen func is enabled
-            output = self.model(sequences_fwd, attention_mask=None, position_ids=position_ids_fwd)
+            # TODO (nithinc): not sure if sample packing works with mm inputs? It already is sample packed?
+            output = self.model(sequences_fwd, attention_mask=None, position_ids=position_ids_fwd, **multi_modal_inputs)
         else:
-            output = self.model(sequences_fwd, attention_mask=attention_mask_fwd, position_ids=position_ids_fwd)
+            output = self.model(sequences_fwd, attention_mask=attention_mask_fwd, position_ids=position_ids_fwd, **multi_modal_inputs)
 
         logits_BSV = output["logits"]
         logits_BSV.div_(temperature)

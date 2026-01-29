@@ -28,6 +28,8 @@ class GeneratorInput(TypedDict):
     sampling_params: Optional[Dict[str, Any]]
     trajectory_ids: Optional[List[TrajectoryID]]
     batch_metadata: Optional[BatchMetadata]
+    # raw mm inputs - passed to vllm
+    multi_modal_data: Optional[List[Dict[str, Any]]]
 
 
 class GeneratorOutput(TypedDict):
@@ -41,6 +43,10 @@ class GeneratorOutput(TypedDict):
     trajectory_ids: Optional[List[TrajectoryID]]
     # Applicable only for step-wise training
     is_last_step: Optional[List[bool]]
+    # pass out both mm data and the tokenized rep from VLLM
+    multi_modal_data: Optional[List[Dict[str, Any]]]
+    # tokenized inputs that should be used
+    multi_modal_inputs: Optional[List[Dict[str, Any]]]
 
 
 class MetricsOutput(TypedDict):
