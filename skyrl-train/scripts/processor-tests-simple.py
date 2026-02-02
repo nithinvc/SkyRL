@@ -2,6 +2,7 @@ from vllm import LLM, SamplingParams
 from vllm.inputs import TokensPrompt
 import argparse
 from typing import List, Tuple, Dict, Any, Optional
+import os
 
 from transformers import AutoModelForImageTextToText, AutoProcessor
 from PIL import Image
@@ -11,6 +12,65 @@ from io import BytesIO
 import torch
 
 from skyrl_train.utils.torch_utils import logprobs_from_logits
+
+
+def compare_tensors(t1: torch.Tensor, t2: torch.Tensor, name: str) -> Dict[str, Any]:
+    """Compare two tensors and return detailed comparison metrics."""
+    result = {
+        "name": name,
+        "t1_shape": tuple(t1.shape),
+        "t2_shape": tuple(t2.shape),
+        "shapes_match": t1.shape == t2.shape,
+    }
+    
+    if t1.shape != t2.shape:
+        result["identical"] = False
+        result["error"] = "Shape mismatch"
+        return result
+    
+    # Convert to same dtype for comparison
+    t1_f = t1.float()
+    t2_f = t2.float()
+    
+    result["identical"] = torch.equal(t1, t2)
+    result["allclose_default"] = torch.allclose(t1_f, t2_f)
+    result["allclose_rtol1e3"] = torch.allclose(t1_f, t2_f, rtol=1e-3, atol=1e-5)
+    result["allclose_rtol1e2"] = torch.allclose(t1_f, t2_f, rtol=1e-2, atol=1e-4)
+    
+    diff = (t1_f - t2_f).abs()
+    result["max_abs_diff"] = diff.max().item()
+    result["mean_abs_diff"] = diff.mean().item()
+    result["median_abs_diff"] = diff.median().item()
+    
+    # Relative difference (avoid division by zero)
+    denom = torch.clamp(t2_f.abs(), min=1e-10)
+    rel_diff = diff / denom
+    result["max_rel_diff"] = rel_diff.max().item()
+    result["mean_rel_diff"] = rel_diff.mean().item()
+    
+    return result
+
+
+def format_comparison_result(result: Dict[str, Any]) -> str:
+    """Format a comparison result dictionary as a readable string."""
+    lines = [f"  {result['name']}:"]
+    lines.append(f"    Shape t1: {result['t1_shape']}, Shape t2: {result['t2_shape']}")
+    lines.append(f"    Shapes match: {result['shapes_match']}")
+    
+    if not result['shapes_match']:
+        lines.append(f"    ERROR: {result.get('error', 'Unknown')}")
+        return "\n".join(lines)
+    
+    lines.append(f"    Identical (bitwise): {result['identical']}")
+    lines.append(f"    Close (default rtol=1e-5, atol=1e-8): {result['allclose_default']}")
+    lines.append(f"    Close (rtol=1e-3, atol=1e-5): {result['allclose_rtol1e3']}")
+    lines.append(f"    Close (rtol=1e-2, atol=1e-4): {result['allclose_rtol1e2']}")
+    lines.append(f"    Max absolute diff: {result['max_abs_diff']:.6e}")
+    lines.append(f"    Mean absolute diff: {result['mean_abs_diff']:.6e}")
+    lines.append(f"    Median absolute diff: {result['median_abs_diff']:.6e}")
+    lines.append(f"    Max relative diff: {result['max_rel_diff']:.6e}")
+    lines.append(f"    Mean relative diff: {result['mean_rel_diff']:.6e}")
+    return "\n".join(lines)
 
 def vl_input():
     """Generate input for vision-language models."""
@@ -247,14 +307,161 @@ def main():
     # now with vllm inputs
     from copy import deepcopy
     hf_vllm_inputs = deepcopy(model_inputs)
-    hf_vllm_inputs['pixel_values'] = torch.tensor(processed_inputs['pixel_values'], device=model_dev)[None, :]
-    hf_vllm_inputs['image_grid_thw'] = torch.tensor(processed_inputs['image_grid_thw'],  device=model_dev)[None, :]
+    vllm_pixel_values = torch.tensor(processed_inputs['pixel_values'], device=model_dev)
+    vllm_image_grid_thw = torch.tensor(processed_inputs['image_grid_thw'], device=model_dev)
+    hf_vllm_inputs['pixel_values'] = vllm_pixel_values[None, :]
+    hf_vllm_inputs['image_grid_thw'] = vllm_image_grid_thw[None, :]
     hf_vllm_outputs = model(**hf_vllm_inputs)
     hf_vllm_logits = hf_vllm_outputs.logits[:, -len(response_tokens) - 1:-1]
     hf_vllm_log_probs = logprobs_from_logits(hf_vllm_logits, seq_rolled, inplace_backward=False)
 
-    # TODO COMPARE
+    # ============================================================
+    # COMPARISON SECTION
+    # ============================================================
+    report_lines = []
+    report_lines.append("=" * 70)
+    report_lines.append(f"PROCESSOR COMPARISON REPORT: {args.model_str}")
+    report_lines.append("=" * 70)
+    report_lines.append("")
 
+    # ----------------------------------------------------------
+    # 1. Compare pixel_values and image_grid_thw
+    # ----------------------------------------------------------
+    report_lines.append("-" * 70)
+    report_lines.append("1. PIXEL VALUES AND IMAGE GRID THW COMPARISON")
+    report_lines.append("   (vLLM preprocessor vs HuggingFace processor)")
+    report_lines.append("-" * 70)
+    
+    # Get HF processor pixel_values and image_grid_thw
+    hf_pixel_values = model_inputs['pixel_values'].squeeze(0)  # Remove batch dim for comparison
+    hf_image_grid_thw = model_inputs['image_grid_thw'].squeeze(0)  # Remove batch dim
+    
+    # Compare pixel_values
+    pv_comparison = compare_tensors(vllm_pixel_values.cpu(), hf_pixel_values.cpu(), "pixel_values")
+    report_lines.append(format_comparison_result(pv_comparison))
+    report_lines.append("")
+    
+    # Compare image_grid_thw
+    thw_comparison = compare_tensors(vllm_image_grid_thw.cpu(), hf_image_grid_thw.cpu(), "image_grid_thw")
+    report_lines.append(format_comparison_result(thw_comparison))
+    report_lines.append("")
+
+    # Summary for pixel_values/image_grid_thw
+    report_lines.append("  SUMMARY:")
+    if pv_comparison['identical'] and thw_comparison['identical']:
+        report_lines.append("    pixel_values and image_grid_thw are IDENTICAL between vLLM and HF")
+    elif pv_comparison.get('allclose_default', False) and thw_comparison.get('allclose_default', False):
+        report_lines.append("    pixel_values and image_grid_thw are CLOSE (within default tolerance)")
+    else:
+        report_lines.append("    pixel_values and/or image_grid_thw DIFFER between vLLM and HF")
+        if not pv_comparison.get('shapes_match', False):
+            report_lines.append(f"      - pixel_values shapes differ: vLLM={pv_comparison['t1_shape']}, HF={pv_comparison['t2_shape']}")
+        if not thw_comparison.get('shapes_match', False):
+            report_lines.append(f"      - image_grid_thw shapes differ: vLLM={thw_comparison['t1_shape']}, HF={thw_comparison['t2_shape']}")
+    report_lines.append("")
+
+    # ----------------------------------------------------------
+    # 2. Compare log probabilities between the 3 methods
+    # ----------------------------------------------------------
+    report_lines.append("-" * 70)
+    report_lines.append("2. LOG PROBABILITIES COMPARISON")
+    report_lines.append("   Comparing: vLLM vs HF+HF_processor vs HF+vLLM_processor")
+    report_lines.append("-" * 70)
+    
+    # Ensure all logprobs are on CPU for comparison
+    vllm_logprobs_cpu = logprobs.cpu().float()
+    hf_logprobs_cpu = hf_log_probs.squeeze(0).cpu().float()  # Remove batch dim
+    hf_vllm_logprobs_cpu = hf_vllm_log_probs.squeeze(0).cpu().float()  # Remove batch dim
+    
+    report_lines.append(f"  Shapes:")
+    report_lines.append(f"    vLLM logprobs: {vllm_logprobs_cpu.shape}")
+    report_lines.append(f"    HF (HF processor) logprobs: {hf_logprobs_cpu.shape}")
+    report_lines.append(f"    HF (vLLM processor) logprobs: {hf_vllm_logprobs_cpu.shape}")
+    report_lines.append("")
+
+    # Compare 1: vLLM vs HF (HF processor)
+    report_lines.append("  Comparison A: vLLM vs HF (with HF processor)")
+    lp_vllm_vs_hf = compare_tensors(vllm_logprobs_cpu, hf_logprobs_cpu, "vLLM vs HF+HF_proc")
+    report_lines.append(format_comparison_result(lp_vllm_vs_hf))
+    report_lines.append("")
+
+    # Compare 2: vLLM vs HF (vLLM processor)
+    report_lines.append("  Comparison B: vLLM vs HF (with vLLM processor)")
+    lp_vllm_vs_hf_vllm = compare_tensors(vllm_logprobs_cpu, hf_vllm_logprobs_cpu, "vLLM vs HF+vLLM_proc")
+    report_lines.append(format_comparison_result(lp_vllm_vs_hf_vllm))
+    report_lines.append("")
+
+    # Compare 3: HF (HF processor) vs HF (vLLM processor)
+    report_lines.append("  Comparison C: HF (HF processor) vs HF (vLLM processor)")
+    lp_hf_vs_hf_vllm = compare_tensors(hf_logprobs_cpu, hf_vllm_logprobs_cpu, "HF+HF_proc vs HF+vLLM_proc")
+    report_lines.append(format_comparison_result(lp_hf_vs_hf_vllm))
+    report_lines.append("")
+
+    # Summary for logprobs
+    report_lines.append("  LOGPROBS SUMMARY:")
+    
+    def summarize_match(result: Dict, name: str) -> str:
+        if result.get('identical'):
+            return f"    {name}: IDENTICAL"
+        elif result.get('allclose_default'):
+            return f"    {name}: CLOSE (default tolerance)"
+        elif result.get('allclose_rtol1e3'):
+            return f"    {name}: CLOSE (rtol=1e-3)"
+        elif result.get('allclose_rtol1e2'):
+            return f"    {name}: CLOSE (rtol=1e-2)"
+        else:
+            return f"    {name}: DIFFERENT (max_abs_diff={result.get('max_abs_diff', 'N/A'):.6e})"
+    
+    report_lines.append(summarize_match(lp_vllm_vs_hf, "vLLM vs HF+HF_proc"))
+    report_lines.append(summarize_match(lp_vllm_vs_hf_vllm, "vLLM vs HF+vLLM_proc"))
+    report_lines.append(summarize_match(lp_hf_vs_hf_vllm, "HF+HF_proc vs HF+vLLM_proc"))
+    report_lines.append("")
+    
+    # Determine which pairs are the same/different
+    report_lines.append("  CONCLUSION:")
+    
+    # Check closeness with a reasonable tolerance for neural network outputs
+    tolerance_check = lambda r: r.get('allclose_rtol1e3', False) or r.get('allclose_default', False) or r.get('identical', False)
+    
+    vllm_hf_same = tolerance_check(lp_vllm_vs_hf)
+    vllm_hf_vllm_same = tolerance_check(lp_vllm_vs_hf_vllm)
+    hf_hf_vllm_same = tolerance_check(lp_hf_vs_hf_vllm)
+    
+    if vllm_hf_same and vllm_hf_vllm_same and hf_hf_vllm_same:
+        report_lines.append("    All three methods produce EQUIVALENT logprobs.")
+    else:
+        if vllm_hf_same:
+            report_lines.append("    - vLLM and HF+HF_processor produce EQUIVALENT logprobs")
+        else:
+            report_lines.append("    - vLLM and HF+HF_processor produce DIFFERENT logprobs")
+            
+        if vllm_hf_vllm_same:
+            report_lines.append("    - vLLM and HF+vLLM_processor produce EQUIVALENT logprobs")
+        else:
+            report_lines.append("    - vLLM and HF+vLLM_processor produce DIFFERENT logprobs")
+            
+        if hf_hf_vllm_same:
+            report_lines.append("    - HF+HF_processor and HF+vLLM_processor produce EQUIVALENT logprobs")
+        else:
+            report_lines.append("    - HF+HF_processor and HF+vLLM_processor produce DIFFERENT logprobs")
+    
+    report_lines.append("")
+    report_lines.append("=" * 70)
+    report_lines.append("END OF REPORT")
+    report_lines.append("=" * 70)
+
+    # Print report to console
+    full_report = "\n".join(report_lines)
+    print("\n" + full_report)
+
+    # Save report to file
+    os.makedirs(args.output_dir, exist_ok=True)
+    # Sanitize model name for filename (replace / with _)
+    model_str_safe = args.model_str.replace("/", "_")
+    report_path = os.path.join(args.output_dir, f"{model_str_safe}_report.txt")
+    with open(report_path, "w") as f:
+        f.write(full_report)
+    print(f"\nReport saved to: {report_path}")
 
 
 if __name__ == "__main__":
