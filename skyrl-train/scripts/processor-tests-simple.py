@@ -104,7 +104,8 @@ def parse_args():
     # options: "Qwen/Qwen3-VL-2B-Instruct", - VL model
     #           "allenai/Molmo2-4B" - VL model
     parser.add_argument("--model_str", type=str, required=True, help="Model identifier")
-    parser.add_argument("--tensor_parallel_size", type=int, default=2, help="Tensor parallel size for vLLM")
+    parser.add_argument("--tensor_parallel_size", type=int, default=1, help="Tensor parallel size for vLLM (use 1 to minimize numerical differences)")
+    parser.add_argument("--dtype", type=str, default="bfloat16", choices=["float16", "bfloat16", "float32"], help="Dtype for model computation")
     parser.add_argument("--output_dir", type=str, default="./comparison-results", help="Directory to save results")
     return parser.parse_args()
 
@@ -246,13 +247,39 @@ def vllm_preprocess(llm: LLM, messages: List[Dict]) -> Dict[str, Any]:
     return mm_kwargs
 
 
+def get_torch_dtype(dtype_str: str) -> torch.dtype:
+    """Convert string dtype to torch dtype."""
+    dtype_map = {
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "float32": torch.float32,
+    }
+    return dtype_map[dtype_str]
+
+
+
+
 @torch.inference_mode()
 def main():
     args = parse_args()
-    llm = LLM(model=args.model_str, tensor_parallel_size=args.tensor_parallel_size)
+    torch_dtype = get_torch_dtype(args.dtype)
+    
+    print(f"Using dtype: {args.dtype} ({torch_dtype})")
+    print(f"Using tensor_parallel_size: {args.tensor_parallel_size}")
+    
+    llm = LLM(
+        model=args.model_str, 
+        tensor_parallel_size=args.tensor_parallel_size,
+        dtype=args.dtype,  # Explicitly set dtype for vLLM
+        gpu_memory_utilization=0.5,
+    )
     messages = vl_input()
 
     # list of token ids, logprobs for each of those tokens
+    print("\n" + "=" * 60)
+    print("Running vLLM preprocessing to get mm_kwargs...")
+    processed_inputs = vllm_preprocess(llm, messages)
+
     print("=" * 60)
     print("Running vLLM rollout and collecting logprobs...")
     response_tokens, logprobs = vllm_rollout_and_logprobs(llm, messages)
@@ -268,10 +295,6 @@ def main():
     response_text = tokenizer.decode(response_tokens, skip_special_tokens=True)
     print(f"\nGenerated response:\n{response_text}")
     
-    print("\n" + "=" * 60)
-    print("Running vLLM preprocessing to get mm_kwargs...")
-    processed_inputs = vllm_preprocess(llm, messages)
-
     print(f"\nProcessed inputs keys: {list(processed_inputs.keys())}")
     for key, value in processed_inputs.items():
         if hasattr(value, 'shape'):
@@ -279,10 +302,18 @@ def main():
         else:
             print(f"  {key}: type={type(value)}")
     
+    # Delete vLLM to free GPU memory for HF model
+    del llm
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+    
     print("\n" + "=" * 60)
     print("Running HF with HF processor inputs...")
-    model_dev = torch.device("cuda:3")
-    model = AutoModelForImageTextToText.from_pretrained(args.model_str).to(model_dev)
+    # Use cuda:0 since we've freed vLLM memory
+    model_dev = torch.device("cuda:0")
+    print(f"HF model device: {model_dev}, dtype: {torch_dtype}")
+    model = AutoModelForImageTextToText.from_pretrained(args.model_str, torch_dtype=torch_dtype, device_map=model_dev)
     processor = AutoProcessor.from_pretrained(args.model_str)
     model_inputs = processor.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_tensors="pt", return_dict=True)
     model_inputs = {k: v.to(model_dev) if isinstance(v, torch.Tensor) else v for k, v in model_inputs.items()}
@@ -361,38 +392,38 @@ def main():
     report_lines.append("")
 
     # ----------------------------------------------------------
-    # 2. Compare log probabilities between the 3 methods
+    # 2. Compare log probabilities between methods
     # ----------------------------------------------------------
     report_lines.append("-" * 70)
     report_lines.append("2. LOG PROBABILITIES COMPARISON")
-    report_lines.append("   Comparing: vLLM vs HF+HF_processor vs HF+vLLM_processor")
+    report_lines.append("   Comparing: vLLM_gen vs HF+HF_processor vs HF+vLLM_processor")
     report_lines.append("-" * 70)
     
     # Ensure all logprobs are on CPU for comparison
-    vllm_logprobs_cpu = logprobs.cpu().float()
+    vllm_gen_logprobs_cpu = logprobs.cpu().float()  # From generation
     hf_logprobs_cpu = hf_log_probs.squeeze(0).cpu().float()  # Remove batch dim
     hf_vllm_logprobs_cpu = hf_vllm_log_probs.squeeze(0).cpu().float()  # Remove batch dim
     
     report_lines.append(f"  Shapes:")
-    report_lines.append(f"    vLLM logprobs: {vllm_logprobs_cpu.shape}")
+    report_lines.append(f"    vLLM (generation) logprobs: {vllm_gen_logprobs_cpu.shape}")
     report_lines.append(f"    HF (HF processor) logprobs: {hf_logprobs_cpu.shape}")
     report_lines.append(f"    HF (vLLM processor) logprobs: {hf_vllm_logprobs_cpu.shape}")
     report_lines.append("")
 
-    # Compare 1: vLLM vs HF (HF processor)
-    report_lines.append("  Comparison A: vLLM vs HF (with HF processor)")
-    lp_vllm_vs_hf = compare_tensors(vllm_logprobs_cpu, hf_logprobs_cpu, "vLLM vs HF+HF_proc")
+    # Compare 1: vLLM generation vs HF (HF processor)
+    report_lines.append("  Comparison A: vLLM generation vs HF (with HF processor)")
+    lp_vllm_vs_hf = compare_tensors(vllm_gen_logprobs_cpu, hf_logprobs_cpu, "vLLM_gen vs HF+HF_proc")
     report_lines.append(format_comparison_result(lp_vllm_vs_hf))
     report_lines.append("")
 
-    # Compare 2: vLLM vs HF (vLLM processor)
-    report_lines.append("  Comparison B: vLLM vs HF (with vLLM processor)")
-    lp_vllm_vs_hf_vllm = compare_tensors(vllm_logprobs_cpu, hf_vllm_logprobs_cpu, "vLLM vs HF+vLLM_proc")
+    # Compare 2: vLLM generation vs HF (vLLM processor)
+    report_lines.append("  Comparison B: vLLM generation vs HF (with vLLM processor)")
+    lp_vllm_vs_hf_vllm = compare_tensors(vllm_gen_logprobs_cpu, hf_vllm_logprobs_cpu, "vLLM_gen vs HF+vLLM_proc")
     report_lines.append(format_comparison_result(lp_vllm_vs_hf_vllm))
     report_lines.append("")
 
-    # Compare 3: HF (HF processor) vs HF (vLLM processor)
-    report_lines.append("  Comparison C: HF (HF processor) vs HF (vLLM processor)")
+    # Compare 3: HF (HF processor) vs HF (vLLM processor) - isolates preprocessor difference
+    report_lines.append("  Comparison C: HF (HF processor) vs HF (vLLM processor) - preprocessor difference")
     lp_hf_vs_hf_vllm = compare_tensors(hf_logprobs_cpu, hf_vllm_logprobs_cpu, "HF+HF_proc vs HF+vLLM_proc")
     report_lines.append(format_comparison_result(lp_hf_vs_hf_vllm))
     report_lines.append("")
@@ -412,8 +443,8 @@ def main():
         else:
             return f"    {name}: DIFFERENT (max_abs_diff={result.get('max_abs_diff', 'N/A'):.6e})"
     
-    report_lines.append(summarize_match(lp_vllm_vs_hf, "vLLM vs HF+HF_proc"))
-    report_lines.append(summarize_match(lp_vllm_vs_hf_vllm, "vLLM vs HF+vLLM_proc"))
+    report_lines.append(summarize_match(lp_vllm_vs_hf, "vLLM_gen vs HF+HF_proc"))
+    report_lines.append(summarize_match(lp_vllm_vs_hf_vllm, "vLLM_gen vs HF+vLLM_proc"))
     report_lines.append(summarize_match(lp_hf_vs_hf_vllm, "HF+HF_proc vs HF+vLLM_proc"))
     report_lines.append("")
     
@@ -427,24 +458,35 @@ def main():
     vllm_hf_vllm_same = tolerance_check(lp_vllm_vs_hf_vllm)
     hf_hf_vllm_same = tolerance_check(lp_hf_vs_hf_vllm)
     
-    if vllm_hf_same and vllm_hf_vllm_same and hf_hf_vllm_same:
-        report_lines.append("    All three methods produce EQUIVALENT logprobs.")
+    # Diagnostic conclusions
+    if hf_hf_vllm_same:
+        report_lines.append("    - Preprocessor difference is negligible")
     else:
-        if vllm_hf_same:
-            report_lines.append("    - vLLM and HF+HF_processor produce EQUIVALENT logprobs")
-        else:
-            report_lines.append("    - vLLM and HF+HF_processor produce DIFFERENT logprobs")
-            
-        if vllm_hf_vllm_same:
-            report_lines.append("    - vLLM and HF+vLLM_processor produce EQUIVALENT logprobs")
-        else:
-            report_lines.append("    - vLLM and HF+vLLM_processor produce DIFFERENT logprobs")
-            
-        if hf_hf_vllm_same:
-            report_lines.append("    - HF+HF_processor and HF+vLLM_processor produce EQUIVALENT logprobs")
-        else:
-            report_lines.append("    - HF+HF_processor and HF+vLLM_processor produce DIFFERENT logprobs")
+        report_lines.append("    - Preprocessor difference contributes to logprob difference")
+        
+    if vllm_hf_same and vllm_hf_vllm_same:
+        report_lines.append("    - vLLM and HF produce equivalent logprobs")
+    else:
+        report_lines.append("    - vLLM and HF have implementation differences affecting logprobs")
     
+    report_lines.append("")
+    
+    # ----------------------------------------------------------
+    # 3. Configuration and Diagnostic Info
+    # ----------------------------------------------------------
+    report_lines.append("-" * 70)
+    report_lines.append("3. CONFIGURATION")
+    report_lines.append("-" * 70)
+    report_lines.append(f"  Model: {args.model_str}")
+    report_lines.append(f"  dtype: {args.dtype}")
+    report_lines.append(f"  tensor_parallel_size: {args.tensor_parallel_size}")
+    report_lines.append(f"  HF device: {model_dev}")
+    report_lines.append("")
+    report_lines.append("  NOTE: For minimal numerical differences between vLLM and HF:")
+    report_lines.append("    - Use tensor_parallel_size=1")
+    report_lines.append("    - Ensure same dtype for both")
+    report_lines.append("    - vLLM and HF use different attention implementations")
+    report_lines.append("    - Small differences (rtol=1e-3) are expected and normal")
     report_lines.append("")
     report_lines.append("=" * 70)
     report_lines.append("END OF REPORT")
