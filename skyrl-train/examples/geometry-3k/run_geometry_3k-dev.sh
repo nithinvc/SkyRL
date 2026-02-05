@@ -13,8 +13,8 @@ set -x
 
 : "${DATA_DIR:="$HOME/data/geometry_3k"}"
 : "${NUM_GPUS:=4}"
-# : "${LOGGER:=console}"
-: "${LOGGER:=wandb}"
+: "${LOGGER:=console}"
+# : "${LOGGER:=wandb}"
 : "${INFERENCE_BACKEND:=vllm}"
 
 uv run --isolated --extra $INFERENCE_BACKEND -m skyrl_train.entrypoints.main_base \
@@ -34,14 +34,14 @@ uv run --isolated --extra $INFERENCE_BACKEND -m skyrl_train.entrypoints.main_bas
   trainer.eval_before_train=true \
   trainer.eval_interval=2 \
   trainer.update_epochs_per_batch=1 \
-  trainer.train_batch_size=64 \
-  trainer.policy_mini_batch_size=32 \
-  trainer.micro_forward_batch_size_per_gpu=8 \
+  trainer.train_batch_size=8 \
+  trainer.policy_mini_batch_size=8 \
+  trainer.micro_forward_batch_size_per_gpu=2 \
   trainer.micro_train_batch_size_per_gpu=2 \
   trainer.use_sample_packing=true \
   trainer.ckpt_interval=5 \
   trainer.max_prompt_length=1024 \
-  generator.sampling_params.max_generate_length=1024 \
+  generator.sampling_params.max_generate_length=512 \
   trainer.policy.optimizer_config.lr=1.0e-6 \
   trainer.algorithm.use_kl_loss=true \
   generator.backend=$INFERENCE_BACKEND \
