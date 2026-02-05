@@ -57,4 +57,4 @@ def main():
 
     # step 3. compute the forward pass with the new full sequence, using the processor multi_modal outputs (e.g., pixel_values and image_grid_thw)
 
-    # step 4. compute the logprobs from the hf model forward pass
+    # step 4. compute the logprobs from the hf model forward pass - store in a tensor call hf_logprobs
