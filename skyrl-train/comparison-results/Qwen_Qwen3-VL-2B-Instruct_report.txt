@@ -1,0 +1,114 @@
+======================================================================
+PROCESSOR COMPARISON REPORT: Qwen/Qwen3-VL-2B-Instruct
+======================================================================
+
+----------------------------------------------------------------------
+1. PIXEL VALUES AND IMAGE GRID THW COMPARISON
+   (vLLM preprocessor vs HuggingFace processor)
+----------------------------------------------------------------------
+  pixel_values:
+    Shape t1: (11008, 1536), Shape t2: (11008, 1536)
+    Shapes match: True
+    Identical (bitwise): False
+    Close (default rtol=1e-5, atol=1e-8): False
+    Close (rtol=1e-3, atol=1e-5): False
+    Close (rtol=1e-2, atol=1e-4): True
+    Max absolute diff: 1.930118e-03
+    Mean absolute diff: 4.107032e-04
+    Median absolute diff: 1.838207e-04
+    Max relative diff: 3.875673e-03
+    Mean relative diff: 9.714162e-04
+
+  image_grid_thw:
+    Shape t1: (3,), Shape t2: (3,)
+    Shapes match: True
+    Identical (bitwise): True
+    Close (default rtol=1e-5, atol=1e-8): True
+    Close (rtol=1e-3, atol=1e-5): True
+    Close (rtol=1e-2, atol=1e-4): True
+    Max absolute diff: 0.000000e+00
+    Mean absolute diff: 0.000000e+00
+    Median absolute diff: 0.000000e+00
+    Max relative diff: 0.000000e+00
+    Mean relative diff: 0.000000e+00
+
+  SUMMARY:
+    pixel_values and/or image_grid_thw DIFFER between vLLM and HF
+
+----------------------------------------------------------------------
+2. LOG PROBABILITIES COMPARISON
+   Comparing: vLLM_gen vs HF+HF_processor vs HF+vLLM_processor
+----------------------------------------------------------------------
+  Shapes:
+    vLLM (generation) logprobs: torch.Size([425])
+    HF (HF processor) logprobs: torch.Size([425])
+    HF (vLLM processor) logprobs: torch.Size([425])
+
+  Comparison A: vLLM generation vs HF (with HF processor)
+  vLLM_gen vs HF+HF_proc:
+    Shape t1: (425,), Shape t2: (425,)
+    Shapes match: True
+    Identical (bitwise): False
+    Close (default rtol=1e-5, atol=1e-8): False
+    Close (rtol=1e-3, atol=1e-5): False
+    Close (rtol=1e-2, atol=1e-4): False
+    Max absolute diff: 8.699503e-01
+    Mean absolute diff: 6.355010e-02
+    Median absolute diff: 1.714182e-02
+    Max relative diff: 1.668929e+04
+    Mean relative diff: 1.488328e+02
+
+  Comparison B: vLLM generation vs HF (with vLLM processor)
+  vLLM_gen vs HF+vLLM_proc:
+    Shape t1: (425,), Shape t2: (425,)
+    Shapes match: True
+    Identical (bitwise): False
+    Close (default rtol=1e-5, atol=1e-8): False
+    Close (rtol=1e-3, atol=1e-5): False
+    Close (rtol=1e-2, atol=1e-4): False
+    Max absolute diff: 8.699503e-01
+    Mean absolute diff: 6.355010e-02
+    Median absolute diff: 1.714182e-02
+    Max relative diff: 1.668929e+04
+    Mean relative diff: 1.488328e+02
+
+  Comparison C: HF (HF processor) vs HF (vLLM processor) - preprocessor difference
+  HF+HF_proc vs HF+vLLM_proc:
+    Shape t1: (425,), Shape t2: (425,)
+    Shapes match: True
+    Identical (bitwise): True
+    Close (default rtol=1e-5, atol=1e-8): True
+    Close (rtol=1e-3, atol=1e-5): True
+    Close (rtol=1e-2, atol=1e-4): True
+    Max absolute diff: 0.000000e+00
+    Mean absolute diff: 0.000000e+00
+    Median absolute diff: 0.000000e+00
+    Max relative diff: 0.000000e+00
+    Mean relative diff: 0.000000e+00
+
+  LOGPROBS SUMMARY:
+    vLLM_gen vs HF+HF_proc: DIFFERENT (max_abs_diff=8.699503e-01)
+    vLLM_gen vs HF+vLLM_proc: DIFFERENT (max_abs_diff=8.699503e-01)
+    HF+HF_proc vs HF+vLLM_proc: IDENTICAL
+
+  CONCLUSION:
+    - Preprocessor difference is negligible
+    - vLLM and HF have implementation differences affecting logprobs
+
+----------------------------------------------------------------------
+3. CONFIGURATION
+----------------------------------------------------------------------
+  Model: Qwen/Qwen3-VL-2B-Instruct
+  dtype: bfloat16
+  tensor_parallel_size: 1
+  HF device: cuda:0
+
+  NOTE: For minimal numerical differences between vLLM and HF:
+    - Use tensor_parallel_size=1
+    - Ensure same dtype for both
+    - vLLM and HF use different attention implementations
+    - Small differences (rtol=1e-3) are expected and normal
+
+======================================================================
+END OF REPORT
+======================================================================

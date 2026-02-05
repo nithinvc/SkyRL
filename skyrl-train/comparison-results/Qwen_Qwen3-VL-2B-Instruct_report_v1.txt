@@ -1,0 +1,101 @@
+======================================================================
+PROCESSOR COMPARISON REPORT: Qwen/Qwen3-VL-2B-Instruct
+======================================================================
+
+----------------------------------------------------------------------
+1. PIXEL VALUES AND IMAGE GRID THW COMPARISON
+   (vLLM preprocessor vs HuggingFace processor)
+----------------------------------------------------------------------
+  pixel_values:
+    Shape t1: (11008, 1536), Shape t2: (11008, 1536)
+    Shapes match: True
+    Identical (bitwise): False
+    Close (default rtol=1e-5, atol=1e-8): False
+    Close (rtol=1e-3, atol=1e-5): False
+    Close (rtol=1e-2, atol=1e-4): True
+    Max absolute diff: 1.930118e-03
+    Mean absolute diff: 4.107032e-04
+    Median absolute diff: 1.838207e-04
+    Max relative diff: 3.875673e-03
+    Mean relative diff: 9.714162e-04
+
+  image_grid_thw:
+    Shape t1: (3,), Shape t2: (3,)
+    Shapes match: True
+    Identical (bitwise): True
+    Close (default rtol=1e-5, atol=1e-8): True
+    Close (rtol=1e-3, atol=1e-5): True
+    Close (rtol=1e-2, atol=1e-4): True
+    Max absolute diff: 0.000000e+00
+    Mean absolute diff: 0.000000e+00
+    Median absolute diff: 0.000000e+00
+    Max relative diff: 0.000000e+00
+    Mean relative diff: 0.000000e+00
+
+  SUMMARY:
+    pixel_values and/or image_grid_thw DIFFER between vLLM and HF
+
+----------------------------------------------------------------------
+2. LOG PROBABILITIES COMPARISON
+   Comparing: vLLM vs HF+HF_processor vs HF+vLLM_processor
+----------------------------------------------------------------------
+  Shapes:
+    vLLM logprobs: torch.Size([352])
+    HF (HF processor) logprobs: torch.Size([352])
+    HF (vLLM processor) logprobs: torch.Size([352])
+
+  Comparison A: vLLM vs HF (with HF processor)
+  vLLM vs HF+HF_proc:
+    Shape t1: (352,), Shape t2: (352,)
+    Shapes match: True
+    Identical (bitwise): False
+    Close (default rtol=1e-5, atol=1e-8): False
+    Close (rtol=1e-3, atol=1e-5): False
+    Close (rtol=1e-2, atol=1e-4): False
+    Max absolute diff: 5.434446e-01
+    Mean absolute diff: 5.539757e-02
+    Median absolute diff: 1.529657e-02
+    Max relative diff: 2.264974e+04
+    Mean relative diff: 3.286984e+02
+
+  Comparison B: vLLM vs HF (with vLLM processor)
+  vLLM vs HF+vLLM_proc:
+    Shape t1: (352,), Shape t2: (352,)
+    Shapes match: True
+    Identical (bitwise): False
+    Close (default rtol=1e-5, atol=1e-8): False
+    Close (rtol=1e-3, atol=1e-5): False
+    Close (rtol=1e-2, atol=1e-4): False
+    Max absolute diff: 6.461821e-01
+    Mean absolute diff: 5.534115e-02
+    Median absolute diff: 1.426002e-02
+    Max relative diff: 2.264974e+04
+    Mean relative diff: 3.286967e+02
+
+  Comparison C: HF (HF processor) vs HF (vLLM processor)
+  HF+HF_proc vs HF+vLLM_proc:
+    Shape t1: (352,), Shape t2: (352,)
+    Shapes match: True
+    Identical (bitwise): False
+    Close (default rtol=1e-5, atol=1e-8): False
+    Close (rtol=1e-3, atol=1e-5): False
+    Close (rtol=1e-2, atol=1e-4): False
+    Max absolute diff: 1.067333e-01
+    Mean absolute diff: 5.417233e-03
+    Median absolute diff: 1.129150e-03
+    Max relative diff: 9.000227e-02
+    Mean relative diff: 1.295708e-02
+
+  LOGPROBS SUMMARY:
+    vLLM vs HF+HF_proc: DIFFERENT (max_abs_diff=5.434446e-01)
+    vLLM vs HF+vLLM_proc: DIFFERENT (max_abs_diff=6.461821e-01)
+    HF+HF_proc vs HF+vLLM_proc: DIFFERENT (max_abs_diff=1.067333e-01)
+
+  CONCLUSION:
+    - vLLM and HF+HF_processor produce DIFFERENT logprobs
+    - vLLM and HF+vLLM_processor produce DIFFERENT logprobs
+    - HF+HF_processor and HF+vLLM_processor produce DIFFERENT logprobs
+
+======================================================================
+END OF REPORT
+======================================================================
