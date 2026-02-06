@@ -26,6 +26,64 @@ def vl_input(processor, tokenizer):
     return messages
 
 
+def compare_log_probs(
+    llm: LLM,
+    hf_model: AutoModelForImageTextToText,
+    vllm_tokens_in: list[int],
+    multi_modal_data: dict,
+    token_input_ids: torch.Tensor,
+    pixel_values: torch.Tensor,
+    image_grid_thw: torch.Tensor,
+) -> tuple[float, float, float, float]:
+    """Compare log probabilities between vLLM and HF model.
+
+    Returns (mean_diff, std_diff, min_diff, max_diff) of the exponentiated
+    absolute difference between HF and vLLM logprobs.
+    """
+    # Step 1. Run vLLM generate and extract response logprobs
+    sampling_params = SamplingParams(logprobs=1, max_tokens=512)
+    vllm_input = TokensPrompt(prompt_token_ids=vllm_tokens_in, multi_modal_data=multi_modal_data)
+    outputs = llm.generate(vllm_input, sampling_params=sampling_params)
+
+    resp = outputs[0].outputs[0]
+    response_token_ids = list(resp.token_ids)
+
+    vllm_logprobs_list = []
+    if resp.logprobs:
+        for i, token_logprobs in enumerate(resp.logprobs):
+            token_id = resp.token_ids[i]
+            vllm_logprobs_list.append(token_logprobs[token_id].logprob)
+    vllm_logprobs = torch.tensor(vllm_logprobs_list)
+
+    # Step 2. Concatenate token_input_ids with response tokens for HF forward pass
+    hf_device = next(hf_model.parameters()).device
+    resp_tensor = torch.tensor(response_token_ids, dtype=token_input_ids.dtype, device=hf_device)[None, :]
+    full_sequence = torch.cat([token_input_ids.to(hf_device), resp_tensor], dim=1)
+    attention_mask = torch.ones_like(full_sequence)
+
+    # Step 3. HF forward pass with pixel_values and image_grid_thw
+    with torch.inference_mode():
+        hf_outputs = hf_model(
+            input_ids=full_sequence,
+            attention_mask=attention_mask,
+            pixel_values=pixel_values.to(hf_device),
+            image_grid_thw=image_grid_thw.to(hf_device),
+        )
+
+    # Step 4. Compute HF logprobs and diff stats
+    hf_logits = hf_outputs.logits[:, -len(response_token_ids) - 1:-1]
+    seq_rolled = torch.roll(full_sequence, shifts=-1, dims=1)[:, -len(response_token_ids) - 1:-1]
+    hf_logprobs = logprobs_from_logits(hf_logits, seq_rolled)
+
+    hf_logprobs = hf_logprobs.cpu()
+    vllm_logprobs = vllm_logprobs.cpu()
+
+    diff = hf_logprobs - vllm_logprobs
+    diff = diff.exp().abs()
+
+    return diff.mean().item(), diff.std().item(), diff.min().item(), diff.max().item()
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Compare logprobs for vision-language models")
     # options: "Qwen/Qwen3-VL-2B-Instruct", - VL model
@@ -71,8 +129,7 @@ def main():
     pixel_values = processor_output["pixel_values"]
     image_grid_thw = processor_output["image_grid_thw"]
 
-    # Step 1. Run llm.generate to get responses from vllm. Get the response log probabilities.
-    # vllm gets passed multi_modal_data (so the pillow object)
+    # Prepare vLLM inputs
     text = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
 
     # Extract the pillow image from messages
@@ -83,51 +140,18 @@ def main():
                 if isinstance(content, dict) and content.get("type") == "image":
                     images.append(content["image"])
 
-    sampling_params = SamplingParams(logprobs=1, max_tokens=512)
-    vllm_input = TokensPrompt(prompt_token_ids=text, multi_modal_data={"image": images[0]})
-    outputs = llm.generate(vllm_input, sampling_params=sampling_params)
+    vllm_tokens_in = text
+    multi_modal_data = {"image": images[0]}
 
-    resp = outputs[0].outputs[0]
-    response_token_ids = list(resp.token_ids)
-
-    vllm_logprobs_list = []
-    if resp.logprobs:
-        for i, token_logprobs in enumerate(resp.logprobs):
-            token_id = resp.token_ids[i]
-            vllm_logprobs_list.append(token_logprobs[token_id].logprob)
-    vllm_logprobs = torch.tensor(vllm_logprobs_list)
-
-    # Step 2. Aggregate the output tokens and create a new full sequence
-    resp_tensor = torch.tensor(response_token_ids, dtype=token_input_ids.dtype, device=hf_device)[None, :]
-    full_sequence = torch.cat([token_input_ids.to(hf_device), resp_tensor], dim=1)
-    attention_mask = torch.ones_like(full_sequence)
-
-    # Step 3. compute the forward pass with the new full sequence, using the processor multi_modal outputs (e.g., pixel_values and image_grid_thw)
-    with torch.inference_mode():
-        hf_outputs = hf_model(
-            input_ids=full_sequence,
-            attention_mask=attention_mask,
-            pixel_values=pixel_values.to(hf_device),
-            image_grid_thw=image_grid_thw.to(hf_device),
-        )
-
-    # Step 4. compute the logprobs from the hf model forward pass - store in a tensor called hf_logprobs
-    hf_logits = hf_outputs.logits[:, -len(response_token_ids) - 1:-1]
-    seq_rolled = torch.roll(full_sequence, shifts=-1, dims=1)[:, -len(response_token_ids) - 1:-1]
-    hf_logprobs = logprobs_from_logits(hf_logits, seq_rolled)
-
-
-    hf_logprobs = hf_logprobs.cpu()
-    vllm_logprobs = vllm_logprobs.cpu()
-
-    diff = hf_logprobs - vllm_logprobs
-    diff = diff.exp().abs()
-    print('DTYPE:', dtype)
-    print('DIFF:', diff.mean().item())
-    print('DIFF STD:', diff.std().item())
-    print('DIFF MAX:', diff.max().item())
-    print('DIFF MIN:', diff.min().item())
-    print('DIFF MEAN:', diff.mean().item())
+    mean_diff, std_diff, min_diff, max_diff = compare_log_probs(
+        llm, hf_model, vllm_tokens_in, multi_modal_data,
+        token_input_ids, pixel_values, image_grid_thw,
+    )
+    print(f"DTYPE: {dtype}")
+    print(f"DIFF MEAN: {mean_diff}")
+    print(f"DIFF STD: {std_diff}")
+    print(f"DIFF MAX: {max_diff}")
+    print(f"DIFF MIN: {min_diff}")
 
 if __name__ == "__main__":
     main()
