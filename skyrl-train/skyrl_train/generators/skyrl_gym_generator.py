@@ -599,8 +599,39 @@ class SkyRLGymGenerator(GeneratorInterface):
             init_prompts.append(init_prompt)
             envs.append(env)
 
-        # For single-turn generation, we can use text-in-token-out, since we do not need to re-tokenize.
-        engine_input = InferenceEngineInput(prompts=init_prompts, sampling_params=sampling_params, multi_modal_data=multi_modal_data)
+        # When processor is available (VLM), use tokens-in-tokens-out via processor.apply_chat_template.
+        # Otherwise, fall back to text-in-tokens-out.
+        if self.processor is not None:
+            all_prompt_token_ids = []
+            all_multi_modal_inputs = []
+            for init_prompt in init_prompts:
+                processed = self.processor.apply_chat_template(
+                    init_prompt,
+                    add_generation_prompt=True,
+                    tokenize=True,
+                    return_dict=True,
+                )
+                all_prompt_token_ids.append(processed["input_ids"])
+                mm_inputs = {}
+                if "pixel_values" in processed:
+                    mm_inputs["pixel_values"] = processed["pixel_values"]
+                if "image_grid_thw" in processed:
+                    mm_inputs["image_grid_thw"] = processed["image_grid_thw"]
+                all_multi_modal_inputs.append(mm_inputs)
+
+            engine_input = InferenceEngineInput(
+                prompt_token_ids=all_prompt_token_ids,
+                sampling_params=sampling_params,
+                multi_modal_data=multi_modal_data,
+            )
+        else:
+            all_multi_modal_inputs = None
+            engine_input = InferenceEngineInput(
+                prompts=init_prompts,
+                sampling_params=sampling_params,
+                multi_modal_data=multi_modal_data,
+            )
+
         engine_output = await self.inference_engine_client.generate(engine_input)
         outputs = engine_output["responses"]
         responses = engine_output["response_ids"]
@@ -632,11 +663,14 @@ class SkyRLGymGenerator(GeneratorInterface):
             # Close the environment
             await self._run_in_executor_if_available(env.close)
 
-        prompt_token_ids = self.tokenizer.apply_chat_template(
-            init_prompts,
-            add_generation_prompt=True,
-            tokenize=True,
-        )
+        if self.processor is not None:
+            prompt_token_ids = all_prompt_token_ids
+        else:
+            prompt_token_ids = self.tokenizer.apply_chat_template(
+                init_prompts,
+                add_generation_prompt=True,
+                tokenize=True,
+            )
         rollout_metrics = get_rollout_metrics(responses, rewards, env_metrics, env_classes)
 
         if self.generator_cfg.apply_overlong_filtering:
@@ -650,6 +684,8 @@ class SkyRLGymGenerator(GeneratorInterface):
             "stop_reasons": stop_reasons,
             "rollout_metrics": rollout_metrics,
             "rollout_logprobs": truncated_logprobs,
+            "multi_modal_data": multi_modal_data,
+            "multi_modal_inputs": all_multi_modal_inputs,
         }
 
         return generator_output
