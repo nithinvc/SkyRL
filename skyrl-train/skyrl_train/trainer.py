@@ -37,7 +37,7 @@ from skyrl_train.generators.utils import (
 )
 from skyrl_train.inference_engines.inference_engine_client import InferenceEngineClient
 from skyrl_train.inference_engines.utils import get_sampling_params_for_backend
-from skyrl_train.training_batch import TrainingInputBatch
+from skyrl_train.training_batch import TensorBatch, TrainingInputBatch
 from skyrl_train.utils import (
     Timer,
     get_ray_pg_ready_with_timeout,
@@ -628,7 +628,7 @@ class RayPPOTrainer:
                     if generator_output.get("is_last_step", None) is not None
                     else None
                 ),
-                "multi_modal_inputs": multi_modal_inputs_tensor,
+                "multi_modal_inputs": TensorBatch(multi_modal_inputs_tensor) if multi_modal_inputs_tensor else None,
             },
         )
         training_input.metadata = {"uids": uids}
@@ -871,9 +871,25 @@ class RayPPOTrainer:
         training_input.metadata["pad_size"] = pad_size
         if pad_size == 0:
             return training_input
-        for key, tensor in training_input.items():
-            if tensor is not None:
-                additional_dims = tuple(tensor.shape[1:]) if len(tensor.shape) > 1 else ()
+        for key, value in training_input.items():
+            if value is not None:
+                if isinstance(value, TensorBatch):
+                    # Pad nested TensorBatch (e.g. multi_modal_inputs)
+                    # TODO (nithinc): i think this might be an issue? 
+                    inner_dict = {}
+                    for inner_key, inner_value in value.items():
+                        if isinstance(inner_value, list):
+                            inner_dict[inner_key] = inner_value + [t.clone() for t in inner_value[:pad_size]]
+                        elif isinstance(inner_value, torch.Tensor):
+                            inner_dict[inner_key] = torch.cat(
+                                [inner_value, inner_value[:pad_size].clone()], dim=0
+                            )
+                        else:
+                            inner_dict[inner_key] = inner_value
+                    new_tensors[key] = TensorBatch(inner_dict)
+                else:
+                    tensor = value
+                    additional_dims = tuple(tensor.shape[1:]) if len(tensor.shape) > 1 else ()
 
                 if key == "is_last_step":
                     padding_tensor = torch.ones(pad_size, *additional_dims, dtype=tensor.dtype, device=tensor.device)
