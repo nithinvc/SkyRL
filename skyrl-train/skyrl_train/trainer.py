@@ -869,6 +869,7 @@ class RayPPOTrainer:
         pad_size = math.ceil(training_input.batch_size / dp_size) * dp_size - training_input.batch_size
         new_tensors = {}
         training_input.metadata["pad_size"] = pad_size
+        logger.info(f"Padding batch with {pad_size} samples {dp_size}, train bsz: {training_input.batch_size}")
         if pad_size == 0:
             return training_input
         for key, value in training_input.items():

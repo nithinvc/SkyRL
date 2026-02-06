@@ -34,7 +34,7 @@ uv run --isolated --extra $INFERENCE_BACKEND -m skyrl_train.entrypoints.main_bas
   data.train_data="['$DATA_DIR/train.parquet']" \
   data.val_data="['$DATA_DIR/test.parquet']" \
   trainer.algorithm.advantage_estimator="grpo" \
-  trainer.policy.model.path="Qwen/Qwen2.5-VL-3B-Instruct" \
+  trainer.policy.model.path="Qwen/Qwen3-VL-2B-Instruct" \
   trainer.placement.colocate_all=true \
   trainer.strategy=fsdp2 \
   trainer.placement.policy_num_gpus_per_node=$NUM_GPUS \
@@ -69,7 +69,7 @@ uv run --isolated --extra $INFERENCE_BACKEND -m skyrl_train.entrypoints.main_bas
   generator.gpu_memory_utilization=0.8 \
   trainer.logger="$LOGGER" \
   trainer.project_name="geometry-3k" \
-  trainer.run_name="geometry-3k-qwen2.5-3b-kl-1e-2" \
+  trainer.run_name="geometry-3k-qwen3-2b-updated-processor" \
   trainer.resume_mode=null \
-  trainer.ckpt_path="$HOME/data/skyrl/ckpts/geometry-3k-qwen2.5-3b-kl-1e-2_ckpt" \
+  trainer.ckpt_path="$HOME/data/skyrl/ckpts/geometry-3k-qwen3-2b-updated-processor_ckpt" \
   $@
