@@ -876,6 +876,7 @@ class RayPPOTrainer:
                 if isinstance(value, TensorBatch):
                     # Pad nested TensorBatch (e.g. multi_modal_inputs)
                     # TODO (nithinc): i think this might be an issue? 
+                    # i am highly sus of this code, i did not vet it
                     inner_dict = {}
                     for inner_key, inner_value in value.items():
                         if isinstance(inner_value, list):
@@ -887,6 +888,7 @@ class RayPPOTrainer:
                         else:
                             inner_dict[inner_key] = inner_value
                     new_tensors[key] = TensorBatch(inner_dict)
+                    continue
                 else:
                     tensor = value
                     additional_dims = tuple(tensor.shape[1:]) if len(tensor.shape) > 1 else ()

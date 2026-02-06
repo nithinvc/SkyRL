@@ -67,5 +67,6 @@ class BatchIterator:
             info={},
             # propagate metadata as is
             metadata=batch.metadata,
+            multi_modal_inputs=batch.get("multi_modal_inputs", None),
         )
         return exp

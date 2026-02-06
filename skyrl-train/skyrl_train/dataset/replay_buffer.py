@@ -70,6 +70,7 @@ class Experience:
     info: Optional[dict]
     kl: Optional[Float[torch.Tensor, "batch response_len"]] = None
     metadata: Optional[Dict[str, Any]] = None
+    multi_modal_inputs: Optional[Dict] = None
 
     @torch.no_grad()
     def to_device(self, device: torch.device) -> None:
@@ -91,6 +92,9 @@ class Experience:
             self.action_mask = to(self.action_mask, device)
         if self.rollout_logprobs is not None:
             self.rollout_logprobs = to(self.rollout_logprobs, device)
+        if self.multi_modal_inputs is not None:
+            # multi_modal_inputs is a TensorBatch (dict subclass) with list-of-tensor values
+            self.multi_modal_inputs.to(device)
 
     def pin_memory(self):
         self.sequences = pin_memory(self.sequences)
@@ -111,6 +115,11 @@ class Experience:
             self.action_mask = self.action_mask.pin_memory()
         if self.rollout_logprobs is not None:
             self.rollout_logprobs = self.rollout_logprobs.pin_memory()
+        if self.multi_modal_inputs is not None:
+            for key in self.multi_modal_inputs:
+                val = self.multi_modal_inputs[key]
+                if isinstance(val, list):
+                    self.multi_modal_inputs[key] = [pin_memory(t) for t in val]
         return self
 
 
