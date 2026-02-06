@@ -1,4 +1,4 @@
-from typing import List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 import torch
 from transformers import AutoTokenizer
 from jaxtyping import Float
@@ -131,9 +131,10 @@ def convert_prompts_responses_to_batch_tensors(
         ]
         logprobs_tensor = torch.tensor(padded_logprobs, dtype=torch.float)
 
-    multi_modal_inputs_tensor = None
+    multi_modal_inputs_dict = None
     if multi_modal_inputs:
-        # TODO (nithinc)
-        multi_modal_inputs_tensor = multi_modal_inputs
+        multi_modal_inputs_dict = {}
+        for key in multi_modal_inputs[0]:
+            multi_modal_inputs_dict[key] = [sample[key] for sample in multi_modal_inputs]
 
-    return sequences, attention_mask, action_mask, ret_rewards, ret_loss_masks, logprobs_tensor, multi_modal_inputs_tensor
+    return sequences, attention_mask, action_mask, ret_rewards, ret_loss_masks, logprobs_tensor, multi_modal_inputs_dict
