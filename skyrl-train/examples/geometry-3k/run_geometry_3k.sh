@@ -12,7 +12,7 @@ set -x
 # You can override defaults with environment variables:
 #   NUM_GPUS=4 DATA_DIR=/path/to/data bash examples/geometry-3k/run_geometry_3k.sh
 
-# tested on 8xH100 80GB
+# tested on 8xL4s 24GB
 
 : "${DATA_DIR:="$HOME/data/geometry_3k"}"
 : "${NUM_GPUS:=8}"
@@ -50,7 +50,7 @@ uv run --isolated --extra $INFERENCE_BACKEND -m skyrl_train.entrypoints.main_bas
   trainer.train_batch_size=64 \
   trainer.policy_mini_batch_size=64 \
   trainer.micro_forward_batch_size_per_gpu=16 \
-  trainer.micro_train_batch_size_per_gpu=8 \
+  trainer.micro_train_batch_size_per_gpu=2 \
   trainer.ckpt_interval=10 \
   trainer.max_prompt_length=1024 \
   generator.sampling_params.max_generate_length=1024 \
@@ -69,7 +69,8 @@ uv run --isolated --extra $INFERENCE_BACKEND -m skyrl_train.entrypoints.main_bas
   generator.gpu_memory_utilization=0.8 \
   trainer.logger="$LOGGER" \
   trainer.project_name="geometry-3k" \
-  trainer.run_name="geometry-3k-qwen3-2b-updated-processor" \
+  trainer.run_name="geometry-3k-qwen3-2b-revert-tokenizer" \
   trainer.resume_mode=null \
   trainer.ckpt_path="$HOME/data/skyrl/ckpts/geometry-3k-qwen3-2b-updated-processor_ckpt" \
+  +generator.engine_init_kwargs.max_model_len=16384 \
   $@
