@@ -574,6 +574,7 @@ class SkyRLGymGenerator(GeneratorInterface):
         env_extras: List[Dict[str, Any]],
         max_tokens: int,
         sampling_params: Optional[Dict[str, Any]] = None,
+        multi_modal_data: Optional[List[Dict[str, Any]]] = None,
     ) -> GeneratorOutput:
         """
         Single-turn batched generation (can use the synchronous offline engine)
@@ -599,7 +600,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             envs.append(env)
 
         # For single-turn generation, we can use text-in-token-out, since we do not need to re-tokenize.
-        engine_input = InferenceEngineInput(prompts=init_prompts, sampling_params=sampling_params)
+        engine_input = InferenceEngineInput(prompts=init_prompts, sampling_params=sampling_params, multi_modal_data=multi_modal_data)
         engine_output = await self.inference_engine_client.generate(engine_input)
         outputs = engine_output["responses"]
         responses = engine_output["response_ids"]
@@ -671,11 +672,12 @@ class SkyRLGymGenerator(GeneratorInterface):
         if self.generator_cfg.step_wise_trajectories:
             assert trajectory_ids is not None, "`trajectory_ids` is a required field for step wise training"
         sampling_params: Optional[dict] = input_batch.get("sampling_params", None)
+        multi_modal_data = input_batch.get("multi_modal_data", None)
         max_tokens = self.generator_cfg.sampling_params.max_generate_length
         max_input_length = self.generator_cfg.max_input_length
 
         if self.batched:
-            return await self.generate_batched(prompts, env_classes, env_extras, max_tokens, sampling_params)
+            return await self.generate_batched(prompts, env_classes, env_extras, max_tokens, sampling_params, multi_modal_data=multi_modal_data)
 
         # Async agent loop to generate trajectories in parallel.
         tasks = []

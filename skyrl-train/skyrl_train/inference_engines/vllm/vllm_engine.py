@@ -172,6 +172,7 @@ class BaseVLLMInferenceEngine(InferenceEngineInterface):
         prompts = input_batch.get("prompts")
         prompt_token_ids = input_batch.get("prompt_token_ids")
         request_sampling_params = input_batch.get("sampling_params")
+        multi_modal_data = input_batch.get("multi_modal_data")
 
         assert (
             prompts is None and prompt_token_ids is not None
@@ -181,7 +182,7 @@ class BaseVLLMInferenceEngine(InferenceEngineInterface):
             SamplingParams(**request_sampling_params) if request_sampling_params is not None else SamplingParams()
         )
 
-        return prompt_token_ids, sampling_params
+        return prompt_token_ids, sampling_params, multi_modal_data
 
     def _postprocess_outputs(self, outputs):
         """Common output processing logic."""
@@ -249,7 +250,7 @@ class VLLMInferenceEngine(BaseVLLMInferenceEngine):
         return vllm.LLM(*args, **kwargs)
 
     async def generate(self, input_batch: InferenceEngineInput) -> InferenceEngineOutput:
-        prompt_token_ids, sampling_params = self._preprocess_prompts(input_batch)
+        prompt_token_ids, sampling_params, multi_modal_data = self._preprocess_prompts(input_batch)
 
         # Check if LoRA is enabled and create LoRA requests
         lora_requests = None
@@ -263,9 +264,17 @@ class VLLMInferenceEngine(BaseVLLMInferenceEngine):
                     LoRARequest(lora_name=f"{lora_int_id}", lora_int_id=lora_int_id, lora_path="/dummy_lora_path")
                 ] * batch_size
 
+        # Build TokensPrompt for each request, optionally including multi-modal data
+        prompts = []
+        for i, r in enumerate(prompt_token_ids):
+            prompt = TokensPrompt(prompt_token_ids=r)
+            if multi_modal_data is not None and multi_modal_data[i]:
+                prompt["multi_modal_data"] = multi_modal_data[i]
+            prompts.append(prompt)
+
         outputs = await asyncio.to_thread(
             self.llm.generate,
-            prompts=[TokensPrompt(prompt_token_ids=r) for r in prompt_token_ids],
+            prompts=prompts,
             sampling_params=sampling_params,
             lora_request=lora_requests,
         )
@@ -404,7 +413,7 @@ class AsyncVLLMInferenceEngine(BaseVLLMInferenceEngine):
         result = await self.llm.add_lora(lora_request)
         return result
 
-    async def _collect_outputs(self, prompt_token_ids, request_id: str, sampling_params: SamplingParams):
+    async def _collect_outputs(self, prompt_token_ids, request_id: str, sampling_params: SamplingParams, multi_modal_data=None):
         """Collect outputs for a single prompt."""
         # Check if LoRA is enabled and create LoRA request
         final_output = None
@@ -419,8 +428,12 @@ class AsyncVLLMInferenceEngine(BaseVLLMInferenceEngine):
                     lora_name=f"{lora_int_id}", lora_int_id=lora_int_id, lora_path="/dummy_lora_path"
                 )
 
+        prompt = TokensPrompt(prompt_token_ids=prompt_token_ids)
+        if multi_modal_data:
+            prompt["multi_modal_data"] = multi_modal_data
+
         async for request_output in self.llm.generate(
-            prompt=TokensPrompt(prompt_token_ids=prompt_token_ids),
+            prompt=prompt,
             sampling_params=sampling_params,
             request_id=request_id,
             lora_request=lora_request,
@@ -431,14 +444,15 @@ class AsyncVLLMInferenceEngine(BaseVLLMInferenceEngine):
 
     async def generate(self, input_batch: InferenceEngineInput) -> InferenceEngineOutput:
         """Generate responses using vLLM's async engine."""
-        prompt_token_ids, sampling_params = self._preprocess_prompts(input_batch)
+        prompt_token_ids, sampling_params, multi_modal_data = self._preprocess_prompts(input_batch)
 
         tasks = []
-        for prompt in prompt_token_ids:
+        for i, prompt in enumerate(prompt_token_ids):
             # Schedule the collection of outputs for each prompt.
             # Avoid duplicate request_ids
             request_id = str(uuid4().hex)
-            task = asyncio.create_task(self._collect_outputs(prompt, request_id, sampling_params))
+            mm_data = multi_modal_data[i] if multi_modal_data is not None and multi_modal_data[i] else None
+            task = asyncio.create_task(self._collect_outputs(prompt, request_id, sampling_params, multi_modal_data=mm_data))
             tasks.append(task)
         outputs = await asyncio.gather(*tasks)
 
