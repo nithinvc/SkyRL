@@ -97,8 +97,13 @@ class HFModelWrapper(nn.Module):
                 # TODO MM update to enable qwen 2.5, 3
                 # TODO (nithinc): revert this to be how we previously had
                 from transformers import Qwen3VLForConditionalGeneration
+                from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor
+
 
                 model_class = Qwen3VLForConditionalGeneration
+                if "Qwen2.5" in pretrain_or_model:
+                    model_class = Qwen2_5_VLForConditionalGeneration
+                else: model_class = Qwen3VLForConditionalGeneration
 
             model_config = AutoConfig.from_pretrained(pretrain_or_model, trust_remote_code=True, **model_config_kwargs)
             # For VLM models (composite configs), rope settings go in text_config

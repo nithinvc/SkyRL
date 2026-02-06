@@ -34,7 +34,7 @@ uv run --isolated --extra $INFERENCE_BACKEND -m skyrl_train.entrypoints.main_bas
   data.train_data="['$DATA_DIR/train.parquet']" \
   data.val_data="['$DATA_DIR/test.parquet']" \
   trainer.algorithm.advantage_estimator="grpo" \
-  trainer.policy.model.path="Qwen/Qwen3-VL-2B-Instruct" \
+  trainer.policy.model.path="Qwen/Qwen2.5-VL-3B-Instruct" \
   trainer.placement.colocate_all=true \
   trainer.strategy=fsdp2 \
   trainer.placement.policy_num_gpus_per_node=$NUM_GPUS \
@@ -50,14 +50,15 @@ uv run --isolated --extra $INFERENCE_BACKEND -m skyrl_train.entrypoints.main_bas
   trainer.train_batch_size=64 \
   trainer.policy_mini_batch_size=64 \
   trainer.micro_forward_batch_size_per_gpu=16 \
-  trainer.micro_train_batch_size_per_gpu=16 \
+  trainer.micro_train_batch_size_per_gpu=8 \
   trainer.ckpt_interval=10 \
   trainer.max_prompt_length=1024 \
-  generator.sampling_params.max_generate_length=4096 \
+  generator.sampling_params.max_generate_length=1024 \
   trainer.policy.optimizer_config.lr=1.0e-6 \
   trainer.policy.optimizer_config.weight_decay=0.1 \
   trainer.policy.optimizer_config.adam_betas=[0.9,0.98] \
   trainer.algorithm.use_kl_loss=true \
+  trainer.algorithm.kl_loss_coef=1e-2 \
   generator.backend=$INFERENCE_BACKEND \
   generator.run_engines_locally=true \
   generator.weight_sync_backend=nccl \
@@ -68,7 +69,7 @@ uv run --isolated --extra $INFERENCE_BACKEND -m skyrl_train.entrypoints.main_bas
   generator.gpu_memory_utilization=0.8 \
   trainer.logger="$LOGGER" \
   trainer.project_name="geometry-3k" \
-  trainer.run_name="geometry-3k" \
+  trainer.run_name="geometry-3k-qwen2.5-3b-kl-1e-2" \
   trainer.resume_mode=null \
-  trainer.ckpt_path="$HOME/data/skyrl/ckpts/geometry-3k_ckpt" \
+  trainer.ckpt_path="$HOME/data/skyrl/ckpts/geometry-3k-qwen2.5-3b-kl-1e-2_ckpt" \
   $@
