@@ -7,32 +7,21 @@ import torch
 from vllm import LLM, SamplingParams
 from transformers import AutoModelForImageTextToText, AutoProcessor
 from skyrl_train.utils.torch_utils import logprobs_from_logits
+from skyrl_train.dataset.dataset import PromptDataset
 
 
-def vl_input():
-    """Generate input for vision-language models."""
-    url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
-
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-
-    img = Image.open(BytesIO(resp.content))
-    img.load()  # fully load/decode the image
-
-    print(f"Image size: {img.size}")
-
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "image": img,
-                },
-                {"type": "text", "text": "Describe this image."},
-            ],
-        }
-    ]
+def vl_input(processor, tokenizer):
+    """Generate input for vision-language models from geometry_3k dataset."""
+    dataset = PromptDataset(
+        datasets='/home/ray/data/geometry_3k/train.parquet',
+        tokenizer=tokenizer,
+        max_prompt_length=12000,
+        processor=processor,
+    )
+    
+    # Get the first item from the dataset
+    messages, env_class, extra, uid, multi_modal_data = dataset[0]
+    
     return messages
 
 
@@ -72,7 +61,8 @@ def main():
 
     # Step 0.5. get the hf model processor and run vl_input through processor.apply_chat_template to get token_input_ids
     processor = AutoProcessor.from_pretrained(model_str)
-    messages = vl_input()
+    tokenizer = llm.get_tokenizer()
+    messages = vl_input(processor, tokenizer)
     processor_output = processor.apply_chat_template(
         messages, tokenize=True, add_generation_prompt=True, return_tensors="pt", return_dict=True
     )
@@ -82,7 +72,6 @@ def main():
 
     # Step 1. Run llm.generate to get responses from vllm. Get the response log probabilities.
     # vllm gets passed multi_modal_data (so the pillow object)
-    tokenizer = llm.get_tokenizer()
     text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
     # Extract the pillow image from messages
