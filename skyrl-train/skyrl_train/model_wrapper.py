@@ -292,6 +292,21 @@ class HFModelWrapper(nn.Module):
         position_ids = attention_mask.long().cumsum(-1) - 1
         position_ids.masked_fill_(attention_mask == 0, 1)
 
+        # NOTE (nithinc): temporary, we will always have multi_modal_inputs in these runs
+        # if we don't we have certainly broken something
+        assert multi_modal_inputs is not None, "multi_modal_inputs is required"
+        for key, value in multi_modal_inputs.items():
+            assert isinstance(value, list), "multi_modal_inputs must be a list"
+            for v in value:
+                assert isinstance(v, torch.Tensor), "multi_modal_inputs must be a list of tensors"
+
+        multi_modal_inputs_tensor = {
+                # packed pixel vals
+                'pixel_values': torch.cat(multi_modal_inputs['pixel_values'], dim=0),
+                # batched image grids
+                'image_grid_thw': torch.stack(multi_modal_inputs['image_grid_thw']),
+            }
+
         sequences_fwd = sequences
         position_ids_fwd = position_ids
         attention_mask_fwd = attention_mask
@@ -327,9 +342,9 @@ class HFModelWrapper(nn.Module):
             # NOTE (sumanthrh): Don't use attention mask. position_ids is enough.
             # Not using attention mask leads to higher perf since flash attention varlen func is enabled
             # TODO (nithinc): not sure if sample packing works with mm inputs? It already is sample packed?
-            output = self.model(sequences_fwd, attention_mask=None, position_ids=position_ids_fwd, **multi_modal_inputs)
+            output = self.model(sequences_fwd, attention_mask=None, position_ids=position_ids_fwd, **multi_modal_inputs_tensor)
         else:
-            output = self.model(sequences_fwd, attention_mask=attention_mask_fwd, position_ids=position_ids_fwd, **multi_modal_inputs)
+            output = self.model(sequences_fwd, attention_mask=attention_mask_fwd, position_ids=position_ids_fwd, **multi_modal_inputs_tensor)
 
         logits_BSV = output["logits"]
         logits_BSV.div_(temperature)
