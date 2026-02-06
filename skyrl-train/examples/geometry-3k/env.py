@@ -13,80 +13,20 @@
 # limitations under the License.
 """
 Environment for Geometry-3K multi-modal math problems.
+
+Uses boxed-answer extraction and sympy-based math grading ported from slime.
 """
 
-import re
+import importlib
 from typing import Any, Dict
 
 from skyrl_gym.envs.base_text_env import BaseTextEnv, BaseTextEnvStepOutput
 
-
-def normalize_answer(answer: str) -> str:
-    """Normalize an answer string for comparison."""
-    answer = answer.strip().lower()
-    # Remove common punctuation and extra whitespace
-    answer = re.sub(r"[.,;:!?]$", "", answer)
-    answer = re.sub(r"\s+", " ", answer)
-    return answer
-
-
-def extract_answer(completion: str) -> str:
-    """Extract the answer from model completion using <answer> tags."""
-    # Try to extract from <answer> tags first
-    match = re.search(r"<answer>(.*?)</answer>", completion, re.DOTALL | re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
-
-    # Fallback: try to find the last line or sentence that looks like an answer
-    # This handles cases where the model doesn't use the expected format
-    lines = completion.strip().split("\n")
-    if lines:
-        return lines[-1].strip()
-
-    return completion.strip()
-
-
-def compute_score(completion: str, ground_truth: str) -> float:
-    """
-    Compute the reward score for a geometry problem.
-
-    Args:
-        completion: The model's completion/response
-        ground_truth: The ground truth answer
-
-    Returns:
-        1.0 if correct, 0.0 otherwise
-    """
-    try:
-        # Extract answer from completion
-        student_answer = extract_answer(completion)
-
-        # Normalize both answers
-        student_normalized = normalize_answer(student_answer)
-        ground_truth_normalized = normalize_answer(ground_truth)
-
-        # Exact match after normalization
-        if student_normalized == ground_truth_normalized:
-            return 1.0
-
-        # Try numeric comparison for numerical answers
-        try:
-            student_num = float(re.sub(r"[^\d.\-]", "", student_answer))
-            ground_truth_num = float(re.sub(r"[^\d.\-]", "", ground_truth))
-            if abs(student_num - ground_truth_num) < 1e-6:
-                return 1.0
-        except (ValueError, TypeError):
-            pass
-
-        # Check if student answer contains the ground truth (for multiple choice)
-        # e.g., "The answer is A" should match ground truth "A"
-        if ground_truth_normalized in student_normalized:
-            return 1.0
-
-        return 0.0
-
-    except Exception:
-        return 0.0
+# The directory name "geometry-3k" contains a hyphen, which isn't valid in
+# standard Python import syntax.  Use importlib so the module path matches
+# the on-disk layout used by the entry-point registration.
+_math_utils = importlib.import_module("examples.geometry-3k.math_utils")
+grade_answer_verl = _math_utils.grade_answer_verl
 
 
 class Geometry3kEnv(BaseTextEnv):
@@ -112,7 +52,12 @@ class Geometry3kEnv(BaseTextEnv):
 
     def _compute_reward(self, action: str) -> float:
         """Compute the reward for the given action (model response)."""
-        return compute_score(action, self.ground_truth)
+        try:
+            if grade_answer_verl(action, self.ground_truth):
+                return 1.0
+            return 0.0
+        except Exception:
+            return 0.0
 
     def step(self, action: str) -> BaseTextEnvStepOutput:
         """

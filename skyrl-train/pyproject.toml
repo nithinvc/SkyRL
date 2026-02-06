@@ -39,6 +39,8 @@ dependencies = [
     "jaxtyping",
     "skyrl-gym",
     "flash-attn",
+    "sympy",
+    "pylatexenc",
     "polars",
     "s3fs",
     "fastapi",
