@@ -29,11 +29,11 @@ def vl_input(processor, tokenizer):
 def compare_log_probs(
     llm: LLM,
     hf_model: AutoModelForImageTextToText,
-    vllm_tokens_in: list[int],
     multi_modal_data: dict,
     token_input_ids: torch.Tensor,
     pixel_values: torch.Tensor,
     image_grid_thw: torch.Tensor,
+    vllm_tokens_in: list[int],
 ) -> tuple[float, float, float, float]:
     """Compare log probabilities between vLLM and HF model.
 
@@ -120,18 +120,16 @@ def main():
 
     # Step 0.5. get the hf model processor and run vl_input through processor.apply_chat_template to get token_input_ids
     processor = AutoProcessor.from_pretrained(model_str)
-    tokenizer = llm.get_tokenizer()
+    vllm_tokenizer = llm.get_tokenizer()
     messages = vl_input(processor, processor.tokenizer)
-    processor_output = processor.apply_chat_template(
+
+    ### Baseline setup for all methods - these always stay const
+    hf_processor_output = processor.apply_chat_template(
         messages, tokenize=True, add_generation_prompt=True, return_tensors="pt", return_dict=True
     )
-    token_input_ids = processor_output["input_ids"]  # shape [1, seq_len]
-    pixel_values = processor_output["pixel_values"]
-    image_grid_thw = processor_output["image_grid_thw"]
-
-    # Prepare vLLM inputs
-    text = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
-
+    token_input_ids = hf_processor_output["input_ids"]  # shape [1, seq_len]
+    pixel_values = hf_processor_output["pixel_values"]
+    image_grid_thw = hf_processor_output["image_grid_thw"]
     # Extract the pillow image from messages
     images = []
     for msg in messages:
@@ -139,19 +137,55 @@ def main():
             for content in msg["content"]:
                 if isinstance(content, dict) and content.get("type") == "image":
                     images.append(content["image"])
-
-    vllm_tokens_in = text
     multi_modal_data = {"image": images[0]}
 
-    mean_diff, std_diff, min_diff, max_diff = compare_log_probs(
-        llm, hf_model, vllm_tokens_in, multi_modal_data,
-        token_input_ids, pixel_values, image_grid_thw,
-    )
-    print(f"DTYPE: {dtype}")
-    print(f"DIFF MEAN: {mean_diff}")
-    print(f"DIFF STD: {std_diff}")
-    print(f"DIFF MAX: {max_diff}")
-    print(f"DIFF MIN: {min_diff}")
+    from functools import partial
+    compare_probs = partial(compare_log_probs, llm, hf_model, multi_modal_data, token_input_ids, pixel_values, image_grid_thw)
+
+
+    ### option 1 all through hf processor
+    hf_token_input_ids = hf_processor_output["input_ids"][0].tolist()
+    hf_token_input_diffs = compare_probs(hf_token_input_ids)
+
+
+    ### option 2: use vllm with tokenize
+    vllm_tokens_in = vllm_tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
+    vllm_token_input_diffs = compare_probs(vllm_tokens_in)
+
+    ### option 3: use hf tokenizer 
+    hf_tokenizer_tokens = processor.tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
+    hf_tokenizer_diffs = compare_probs(hf_tokenizer_tokens)
+
+    # Pretty print results
+    print("\n" + "="*80)
+    print("LOGPROB COMPARISON RESULTS")
+    print("="*80)
+    
+    print("\n📊 Option 1: HF Processor Token Input")
+    print("   Description: Using HuggingFace processor.apply_chat_template() with tokenize=True")
+    print(f"   Mean: {hf_token_input_diffs[0]:.6f}")
+    print(f"   Std:  {hf_token_input_diffs[1]:.6f}")
+    print(f"   Min:  {hf_token_input_diffs[2]:.6f}")
+    print(f"   Max:  {hf_token_input_diffs[3]:.6f}")
+    
+    print("\n📊 Option 2: vLLM Tokenizer Input")
+    print("   Description: Using vLLM tokenizer.apply_chat_template() with tokenize=True")
+    print(f"   Mean: {vllm_token_input_diffs[0]:.6f}")
+    print(f"   Std:  {vllm_token_input_diffs[1]:.6f}")
+    print(f"   Min:  {vllm_token_input_diffs[2]:.6f}")
+    print(f"   Max:  {vllm_token_input_diffs[3]:.6f}")
+    
+    print("\n📊 Option 3: HF Tokenizer Input")
+    print("   Description: Using HuggingFace processor.tokenizer.apply_chat_template() with tokenize=True")
+    print(f"   Mean: {hf_tokenizer_diffs[0]:.6f}")
+    print(f"   Std:  {hf_tokenizer_diffs[1]:.6f}")
+    print(f"   Min:  {hf_tokenizer_diffs[2]:.6f}")
+    print(f"   Max:  {hf_tokenizer_diffs[3]:.6f}")
+    
+    print("\n" + "="*80)
+    print("Note: Diffs are exp(abs(HF_logprobs - vLLM_logprobs))")
+    print("="*80 + "\n")
+
 
 if __name__ == "__main__":
     main()
