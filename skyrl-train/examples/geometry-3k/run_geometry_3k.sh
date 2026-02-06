@@ -16,7 +16,7 @@ set -x
 
 : "${DATA_DIR:="$HOME/data/geometry_3k"}"
 : "${NUM_GPUS:=8}"
-: "${LOGGER:=wandb}"  # change to "wandb" for W&B logging
+: "${LOGGER:=console}"  # change to "wandb" for W&B logging
 : "${INFERENCE_BACKEND:=vllm}"
 
 # args from slime
@@ -44,7 +44,7 @@ uv run --isolated --extra $INFERENCE_BACKEND -m skyrl_train.entrypoints.main_bas
   generator.inference_engine_tensor_parallel_size=1 \
   trainer.epochs=20 \
   trainer.eval_batch_size=512 \
-  trainer.eval_before_train=true \
+  trainer.eval_before_train=false \
   trainer.eval_interval=5 \
   trainer.update_epochs_per_batch=1 \
   trainer.train_batch_size=64 \
@@ -69,7 +69,7 @@ uv run --isolated --extra $INFERENCE_BACKEND -m skyrl_train.entrypoints.main_bas
   generator.gpu_memory_utilization=0.8 \
   trainer.logger="$LOGGER" \
   trainer.project_name="geometry-3k" \
-  trainer.run_name="geometry-3k-qwen3-2b-revert-tokenizer" \
+  trainer.run_name="geometry-3k-qwen3-2b-corrected-grader" \
   trainer.resume_mode=null \
   trainer.ckpt_path="$HOME/data/skyrl/ckpts/geometry-3k-qwen3-2b-updated-processor_ckpt" \
   +generator.engine_init_kwargs.max_model_len=16384 \

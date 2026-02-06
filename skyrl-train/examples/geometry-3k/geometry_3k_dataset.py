@@ -27,12 +27,13 @@ import datasets
 QUESTION_TEMPLATE = "{Question}\n\nPlease think step by step and put your final answer within \\boxed{{}}."
 
 QUESTION_TEMPLATE = ("You are a math/geometry expert. Solve the user's question carefully and verify your work. Reason step by step as an internal monologue wrapped inside <think>...</think> tags."
-"Solve the following math problem step by step. The last line of your response should be of the form Answer: \boxed{$Answer} where $Answer is the answer to the problem.\n{Question}")
+"Solve the following math problem step by step. The last line of your response should be of the form Answer: \boxed{$Answer} where Answer is the answer to the problem.\n{Question}")
 
 
 def make_map_fn(split):
     def process_fn(example, idx):
         # The answer field contains the ground truth answer
+        print(example.keys())
         answer = example["answer"].strip()
 
         # Build the prompt with image and text content
