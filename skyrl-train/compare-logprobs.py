@@ -9,6 +9,7 @@ from transformers import AutoModelForImageTextToText, AutoProcessor
 from skyrl_train.utils.torch_utils import logprobs_from_logits
 from skyrl_train.dataset.dataset import PromptDataset
 
+from vllm import TokensPrompt
 
 def vl_input(processor, tokenizer):
     """Generate input for vision-language models from geometry_3k dataset."""
@@ -62,7 +63,7 @@ def main():
     # Step 0.5. get the hf model processor and run vl_input through processor.apply_chat_template to get token_input_ids
     processor = AutoProcessor.from_pretrained(model_str)
     tokenizer = llm.get_tokenizer()
-    messages = vl_input(processor, tokenizer)
+    messages = vl_input(processor, processor.tokenizer)
     processor_output = processor.apply_chat_template(
         messages, tokenize=True, add_generation_prompt=True, return_tensors="pt", return_dict=True
     )
@@ -72,7 +73,7 @@ def main():
 
     # Step 1. Run llm.generate to get responses from vllm. Get the response log probabilities.
     # vllm gets passed multi_modal_data (so the pillow object)
-    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    text = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
 
     # Extract the pillow image from messages
     images = []
@@ -83,8 +84,8 @@ def main():
                     images.append(content["image"])
 
     sampling_params = SamplingParams(logprobs=1, max_tokens=512)
-    vllm_inputs = [{"prompt": text, "multi_modal_data": {"image": images[0]}}]
-    outputs = llm.generate(vllm_inputs, sampling_params=sampling_params)
+    vllm_input = TokensPrompt(prompt_token_ids=text, multi_modal_data={"image": images[0]})
+    outputs = llm.generate(vllm_input, sampling_params=sampling_params)
 
     resp = outputs[0].outputs[0]
     response_token_ids = list(resp.token_ids)
