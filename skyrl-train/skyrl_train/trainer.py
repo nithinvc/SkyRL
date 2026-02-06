@@ -992,15 +992,15 @@ class RayPPOTrainer:
 
             self.all_metrics.update(
                 {
-                    "policy/rollout_train_prob_diff_mean": prob_diff_mean,
-                    "policy/rollout_train_prob_diff_std": prob_diff_std,
-                    "policy/rollout_train_log_prob_diff_mean": log_prob_diff_mean,
-                    "policy/rollout_train_log_prob_diff_std": log_prob_diff_std,
-                    "policy/rollout_train_log_prob_diff_min": log_prob_diff_min,
-                    "policy/rollout_train_log_prob_diff_max": log_prob_diff_max,
-                    "policy/rollout_train_ratio_mag_p50": q[0].item(),
-                    "policy/rollout_train_ratio_mag_p90": q[1].item(),
-                    "policy/rollout_train_ratio_mag_p99": q[2].item(),
+                    "policy-drift/rollout_train_prob_diff_mean": prob_diff_mean,
+                    "policy-drift/rollout_train_prob_diff_std": prob_diff_std,
+                    "policy-drift/rollout_train_log_prob_diff_mean": log_prob_diff_mean,
+                    "policy-drift/rollout_train_log_prob_diff_std": log_prob_diff_std,
+                    "policy-drift/rollout_train_log_prob_diff_min": log_prob_diff_min,
+                    "policy-drift/rollout_train_log_prob_diff_max": log_prob_diff_max,
+                    "policy-drift/rollout_train_ratio_mag_p50": q[0].item(),
+                    "policy-drift/rollout_train_ratio_mag_p90": q[1].item(),
+                    "policy-drift/rollout_train_ratio_mag_p99": q[2].item(),
                 }
             )
         return training_input
