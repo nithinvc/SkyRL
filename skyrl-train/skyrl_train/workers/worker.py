@@ -1095,8 +1095,9 @@ class RefWorkerBase(Worker):
         sequences = micro_batch["sequences"]
         response_length = micro_batch.metadata["response_length"]
         attention_mask = micro_batch["attention_mask"]
+        multi_modal_inputs = micro_batch["multi_modal_inputs"]
         with torch.no_grad(), torch.autocast(dtype=torch.bfloat16, device_type="cuda"):
-            log_probs = self.model(sequences, response_length, attention_mask, return_output=False)
+            log_probs = self.model(sequences, response_length, attention_mask, return_output=False, multi_modal_inputs=multi_modal_inputs)
         log_probs = log_probs.to("cpu")
         output = TrainingOutputBatch(
             {"output": log_probs},
