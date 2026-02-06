@@ -304,7 +304,7 @@ class HFModelWrapper(nn.Module):
                 # packed pixel vals
                 'pixel_values': torch.cat(multi_modal_inputs['pixel_values'], dim=0),
                 # batched image grids
-                'image_grid_thw': torch.stack(multi_modal_inputs['image_grid_thw']),
+                'image_grid_thw': torch.cat(multi_modal_inputs['image_grid_thw'], dim=0),
             }
 
         sequences_fwd = sequences
