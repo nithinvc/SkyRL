@@ -611,7 +611,8 @@ class SkyRLGymGenerator(GeneratorInterface):
                     tokenize=True,
                     return_dict=True,
                 )
-                all_prompt_token_ids.append(processed["input_ids"])
+                # remove batch dim
+                all_prompt_token_ids.append(processed["input_ids"][0])
                 mm_inputs = {}
                 if "pixel_values" in processed:
                     mm_inputs["pixel_values"] = processed["pixel_values"]
