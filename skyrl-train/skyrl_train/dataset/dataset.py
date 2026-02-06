@@ -68,6 +68,7 @@ class PromptDataset:
         self.prompt_key = prompt_key
         self.env_class_key = env_class_key
         self.num_workers = num_workers
+        self.processor = processor
 
         self.datasets = datasets
         if isinstance(self.datasets, str):
@@ -140,6 +141,11 @@ class PromptDataset:
             # or list of images for multiple images
             if images:
                 multi_modal_data = {"image": images[0]} if len(images) == 1 else {"image": images}
+
+        for m in messages:
+            for content in m["content"]:
+                if 'image' in content and content['image'] is None:
+                    content.pop('image')
 
         return messages, env_class, extra, uid, multi_modal_data
 
