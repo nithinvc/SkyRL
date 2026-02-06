@@ -981,10 +981,26 @@ class RayPPOTrainer:
             prob_diff = logprobs_diff.exp().abs()
             prob_diff_mean = prob_diff.mean().item()
             prob_diff_std = prob_diff.std().item()
+
+            # some extra logging for debugging
+            log_prob_diff_mean = logprobs_diff.mean().item()
+            log_prob_diff_std = logprobs_diff.std().item()
+            log_prob_diff_min = logprobs_diff.min().item()
+            log_prob_diff_max = logprobs_diff.max().item()
+            ratio_mag = logprobs_diff.abs().exp()   # exp(|Δ|)
+            q = torch.quantile(ratio_mag, torch.tensor([0.5, 0.9, 0.99], device=ratio_mag.device))
+
             self.all_metrics.update(
                 {
                     "policy/rollout_train_prob_diff_mean": prob_diff_mean,
                     "policy/rollout_train_prob_diff_std": prob_diff_std,
+                    "policy/rollout_train_log_prob_diff_mean": log_prob_diff_mean,
+                    "policy/rollout_train_log_prob_diff_std": log_prob_diff_std,
+                    "policy/rollout_train_log_prob_diff_min": log_prob_diff_min,
+                    "policy/rollout_train_log_prob_diff_max": log_prob_diff_max,
+                    "policy/rollout_train_ratio_mag_p50": q[0].item(),
+                    "policy/rollout_train_ratio_mag_p90": q[1].item(),
+                    "policy/rollout_train_ratio_mag_p99": q[2].item(),
                 }
             )
         return training_input

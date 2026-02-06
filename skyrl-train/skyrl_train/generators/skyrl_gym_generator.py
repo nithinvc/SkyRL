@@ -633,6 +633,15 @@ class SkyRLGymGenerator(GeneratorInterface):
                 multi_modal_data=multi_modal_data,
             )
 
+        # replace all inference engine inputs with only the tokenizer inputs
+        # vllm will take care of adding extra tokens
+        if self.processor is not None:
+            engine_prompt_token_ids = []
+            for p in init_prompts:
+                p = self.processor.tokenizer.apply_chat_template(p, tokenize=True, add_generation_prompt=True)
+                engine_prompt_token_ids.append(p)
+            engine_input["prompt_token_ids"] = engine_prompt_token_ids
+
         engine_output = await self.inference_engine_client.generate(engine_input)
         outputs = engine_output["responses"]
         responses = engine_output["response_ids"]
