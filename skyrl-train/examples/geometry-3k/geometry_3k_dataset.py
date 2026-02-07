@@ -24,10 +24,8 @@ import os
 import datasets
 
 
-QUESTION_TEMPLATE = "{Question}\n\nPlease think step by step and put your final answer within \\boxed{{}}."
-
-QUESTION_TEMPLATE = ("You are a math/geometry expert. Solve the user's question carefully and verify your work. Reason step by step as an internal monologue wrapped inside <think>...</think> tags."
-"Solve the following math problem step by step. The last line of your response should be of the form Answer: \boxed{$Answer} where Answer is the answer to the problem.\n{Question}")
+QUESTION_TEMPLATE = ("You are a math/geometry expert. Solve the user's question carefully and verify your work. Reason step by step as an internal monologue wrapped inside <think>...</think> tags. "
+r"Solve the following math problem step by step. The last line of your response should be of the form Answer: \boxed{{$Answer}} where $Answer is the answer to the problem." "\n{Question}")
 
 
 def make_map_fn(split):
@@ -128,3 +126,23 @@ if __name__ == "__main__":
         print(f"Saved test set ({len(test_dataset)} examples) to {test_parquet_path}")
 
     print(f"\nDataset preparation complete! Output directory: {output_dir}")
+
+    # Print a sample from the training set
+    print("\n" + "=" * 60)
+    print("SAMPLE ENTRY (index 0)")
+    print("=" * 60)
+    sample = train_dataset[0]
+    print(f"\n--- Prompt ---")
+    for msg in sample["prompt"]:
+        print(f"[{msg['role']}]")
+        for part in msg["content"]:
+            if part["type"] == "text":
+                print(part["text"])
+            elif part["type"] == "image":
+                print(f"  <image: {type(part['image']).__name__}>")
+    print(f"\n--- Reward Spec ---")
+    print(f"  method: {sample['reward_spec']['method']}")
+    print(f"  ground_truth: {sample['reward_spec']['ground_truth']}")
+    print(f"\n--- Extra Info ---")
+    for k, v in sample["extra_info"].items():
+        print(f"  {k}: {v}")
