@@ -19,22 +19,31 @@ set -x
 : "${LOGGER:=wandb}"  # change to "wandb" for W&B logging
 : "${INFERENCE_BACKEND:=vllm}"
 
-# args from slime
-# grpo_args = (
-#     "--advantage-estimator grpo "
-#     "--kl-loss-coef 0.00 "
-#     "--kl-loss-type low_var_kl "
-#     "--kl-coef 0.00 "
-#     "--entropy-coef 0.00 "
-#     "--eps-clip 0.2 "
-#     "--eps-clip-high 0.28 "
-# )
+    # grpo_args = (
+    #     "--advantage-estimator grpo "
+    #     "--kl-loss-coef 0.00 "
+    #     "--kl-loss-type low_var_kl "
+    #     "--kl-coef 0.00 "
+    #     "--entropy-coef 0.00 "
+    #     "--eps-clip 0.2 "
+    #     "--eps-clip-high 0.28 "
+    # )
+
+    # optimizer_args = (
+    #     "--optimizer adam "
+    #     "--lr 1e-6 "
+    #     "--lr-decay-style constant "
+    #     "--weight-decay 0.1 "
+    #     "--adam-beta1 0.9 "
+    #     "--adam-beta2 0.98 "
+    # )
+
 
 uv run --isolated --extra $INFERENCE_BACKEND -m skyrl_train.entrypoints.main_base \
   data.train_data="['$DATA_DIR/train.parquet']" \
   data.val_data="['$DATA_DIR/test.parquet']" \
   trainer.algorithm.advantage_estimator="grpo" \
-  trainer.policy.model.path="Qwen/Qwen3-VL-2B-Instruct" \
+  trainer.policy.model.path="Qwen/Qwen3-VL-4B-Instruct" \
   trainer.placement.colocate_all=true \
   trainer.strategy=fsdp2 \
   trainer.placement.policy_num_gpus_per_node=$NUM_GPUS \
@@ -50,15 +59,17 @@ uv run --isolated --extra $INFERENCE_BACKEND -m skyrl_train.entrypoints.main_bas
   trainer.train_batch_size=64 \
   trainer.policy_mini_batch_size=64 \
   trainer.micro_forward_batch_size_per_gpu=16 \
-  trainer.micro_train_batch_size_per_gpu=8 \
+  trainer.micro_train_batch_size_per_gpu=4 \
   trainer.ckpt_interval=10 \
   trainer.max_prompt_length=1024 \
   generator.sampling_params.max_generate_length=1024 \
   trainer.policy.optimizer_config.lr=1.0e-6 \
   trainer.policy.optimizer_config.weight_decay=0.1 \
   trainer.policy.optimizer_config.adam_betas=[0.9,0.98] \
-  trainer.algorithm.use_kl_loss=true \
-  trainer.algorithm.kl_loss_coef=1e-2 \
+  trainer.algorithm.use_kl_loss=false \
+  trainer.algorithm.kl_loss_coef=0.0 \
+  trainer.algorithm.eps_clip_low=0.2 \
+  trainer.algorithm.eps_clip_high=0.28 \
   generator.backend=$INFERENCE_BACKEND \
   generator.run_engines_locally=true \
   generator.weight_sync_backend=nccl \
@@ -69,7 +80,7 @@ uv run --isolated --extra $INFERENCE_BACKEND -m skyrl_train.entrypoints.main_bas
   generator.gpu_memory_utilization=0.8 \
   trainer.logger="$LOGGER" \
   trainer.project_name="geometry-3k" \
-  trainer.run_name="geometry-3k-qwen3-2b-revert-tokenizer" \
+  trainer.run_name="geometry-3k-qwen3-4b-slime-hparams" \
   trainer.resume_mode=null \
-  trainer.ckpt_path="$HOME/data/skyrl/ckpts/geometry-3k-qwen3-2b-updated-processor_ckpt" \
+  trainer.ckpt_path="$HOME/data/skyrl/ckpts/geometry-3k-qwen3-4b-slime-hparams-ckpt" \
   $@
