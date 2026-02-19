@@ -16,6 +16,7 @@ import signal
 import random
 import threading
 import time
+import base64
 
 from skyrl.tinker import types
 from skyrl.tinker.config import EngineConfig, add_model, config_to_argv
@@ -255,10 +256,63 @@ class TrainingRun(BaseModel):
 
 
 class ModelInputChunk(BaseModel):
-    tokens: list[int]
+    type: str | None = None
+    tokens: list[int] | None = None
+    data: bytes | str | None = None
+    format: str | None = None
+    expected_tokens: int | None = None
+
+    @model_validator(mode="after")
+    def validate_chunk(self):
+        if self.type is None:
+            # Legacy shape: {"tokens": [...]}
+            if self.tokens is None:
+                raise ValueError("Legacy chunk payload requires `tokens`.")
+            return self
+
+        if self.type == "encoded_text":
+            if self.tokens is None:
+                raise ValueError("`encoded_text` chunk requires `tokens`.")
+            return self
+
+        if self.type == "image":
+            if self.data is None:
+                raise ValueError("`image` chunk requires `data`.")
+            if self.format is None:
+                raise ValueError("`image` chunk requires `format`.")
+            if self.expected_tokens is None:
+                raise ValueError("`image` chunk requires `expected_tokens`.")
+            return self
+
+        if self.type == "image_asset_pointer":
+            raise ValueError("Unsupported chunk type `image_asset_pointer`. Only `encoded_text` and `image` are supported.")
+
+        raise ValueError(f"Unsupported chunk type `{self.type}`. Supported types: `encoded_text`, `image`.")
+
+    @staticmethod
+    def _decode_image_data(data: bytes | str) -> bytes:
+        if isinstance(data, bytes):
+            return data
+        # API payloads often carry binary data as base64-encoded strings.
+        try:
+            return base64.b64decode(data, validate=True)
+        except Exception:
+            return data.encode("utf-8")
 
     def to_types(self) -> types.ModelInputChunk:
-        return types.ModelInputChunk(tokens=self.tokens)
+        if self.type is None or self.type == "encoded_text":
+            assert self.tokens is not None
+            return types.EncodedTextChunk(tokens=self.tokens)
+        if self.type == "image":
+            assert self.data is not None
+            assert self.format is not None
+            assert self.expected_tokens is not None
+            return types.ImageChunk(
+                data=self._decode_image_data(self.data),
+                format=self.format,
+                expected_tokens=self.expected_tokens,
+            )
+        raise ValueError(f"Unsupported chunk type `{self.type}`")
 
 
 class ModelInput(BaseModel):

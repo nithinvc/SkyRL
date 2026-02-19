@@ -39,3 +39,24 @@ def test_forward_backward_input_rejects_loss_fn_config_for_cross_entropy():
             loss_fn="cross_entropy",
             loss_fn_config={"clip_low_threshold": 0.9},
         )
+
+
+def test_model_input_chunk_accepts_typed_encoded_text():
+    chunk = api.ModelInputChunk(type="encoded_text", tokens=[1, 2, 3])
+    converted = chunk.to_types()
+    assert isinstance(converted, api.types.EncodedTextChunk)
+    assert converted.tokens == [1, 2, 3]
+
+
+def test_model_input_chunk_accepts_typed_image():
+    chunk = api.ModelInputChunk(type="image", data=b"img-bytes", format="jpeg", expected_tokens=8)
+    converted = chunk.to_types()
+    assert isinstance(converted, api.types.ImageChunk)
+    assert converted.expected_tokens == 8
+    assert converted.format == "jpeg"
+    assert converted.data == b"img-bytes"
+
+
+def test_model_input_chunk_rejects_unsupported_type():
+    with pytest.raises(ValidationError, match="Unsupported chunk type"):
+        api.ModelInputChunk(type="audio", data=b"123")

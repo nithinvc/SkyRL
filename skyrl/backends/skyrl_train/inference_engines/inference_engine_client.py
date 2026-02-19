@@ -87,6 +87,7 @@ class InferenceEngineClient(InferenceEngineInterface):
         # 0. Extract input
         prompts = input_batch.get("prompts")
         prompt_token_ids = input_batch.get("prompt_token_ids")
+        multi_modal_data = input_batch.get("multi_modal_data")
         session_ids = input_batch.get("session_ids")
         sampling_params = input_batch.get("sampling_params")
 
@@ -99,6 +100,10 @@ class InferenceEngineClient(InferenceEngineInterface):
                 return_dict=True,
                 tokenize=True,
             )["input_ids"]
+            multi_modal_data = None
+
+        if multi_modal_data is not None and len(multi_modal_data) != len(prompt_token_ids):
+            raise ValueError("`multi_modal_data` must match `prompt_token_ids` length.")
 
         num_prompts = len(prompt_token_ids)
         num_inference_engines = len(self.engines)
@@ -122,6 +127,7 @@ class InferenceEngineClient(InferenceEngineInterface):
                 engine_idx=engine_idx,
                 original_prompt_ids=original_prompt_ids,
                 sampling_params=sampling_params,
+                multi_modal_data=(multi_modal_data[0] if multi_modal_data is not None else None),
             )
 
         # For batched generate(), pause/continue cannot be supported.
@@ -134,8 +140,12 @@ class InferenceEngineClient(InferenceEngineInterface):
         for engine_idx, prompt_ids in engine_idx_to_prompt_ids.items():
             # index prompt_token_ids with prompt_ids
             cur_prompt_token_ids = [prompt_token_ids[i] for i in prompt_ids]
+            cur_multi_modal_data = None
+            if multi_modal_data is not None:
+                cur_multi_modal_data = [multi_modal_data[i] for i in prompt_ids]
             engine_input = InferenceEngineInput(
                 prompt_token_ids=cur_prompt_token_ids,
+                multi_modal_data=cur_multi_modal_data,
                 sampling_params=sampling_params,
             )
             tasks.append(asyncio.create_task(self.engines[engine_idx].generate(engine_input)))
@@ -189,6 +199,7 @@ class InferenceEngineClient(InferenceEngineInterface):
         num_samples: int,
         sampling_params: Dict[str, Any],
         session_id: Optional[Union[str, int]] = None,
+        multi_modal_data: Optional[Dict[str, Any]] = None,
     ) -> InferenceEngineOutput:
         """Generate multiple independent samples from a single prompt.
 
@@ -217,10 +228,15 @@ class InferenceEngineClient(InferenceEngineInterface):
             prompt_token_ids=prompt_token_ids,
             num_samples=num_samples,
             sampling_params=sampling_params,
+            multi_modal_data=multi_modal_data,
         )
 
     async def _generate_single_with_retry(
-        self, engine_idx: int, original_prompt_ids: List[int], sampling_params: Optional[Dict[str, Any]]
+        self,
+        engine_idx: int,
+        original_prompt_ids: List[int],
+        sampling_params: Optional[Dict[str, Any]],
+        multi_modal_data: Optional[Dict[str, Any]] = None,
     ) -> InferenceEngineOutput:
         """
         Generate a single response with retry mechanism.
@@ -280,6 +296,7 @@ class InferenceEngineClient(InferenceEngineInterface):
             new_prompt_ids = original_prompt_ids + accum_response_ids
             engine_input = InferenceEngineInput(
                 prompt_token_ids=[new_prompt_ids],
+                multi_modal_data=[multi_modal_data] if multi_modal_data is not None else None,
                 sampling_params=cur_sampling_params,
             )
 

@@ -43,11 +43,13 @@ class RayWrappedInferenceEngine(InferenceEngineInterface):
         prompt_token_ids: List[int],
         num_samples: int,
         sampling_params: Dict[str, Any],
+        multi_modal_data: Dict[str, Any] | None = None,
     ) -> InferenceEngineOutput:
         return await self.inference_engine_actor.sample.remote(
             prompt_token_ids=prompt_token_ids,
             num_samples=num_samples,
             sampling_params=sampling_params,
+            multi_modal_data=multi_modal_data,
         )
 
     async def wake_up(self, *args: Any, **kwargs: Any):

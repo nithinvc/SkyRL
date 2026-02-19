@@ -13,6 +13,7 @@ class InferenceEngineInput(TypedDict):
     # Either prompts or prompt_token_ids must be provided, but not both.
     prompts: Optional[List[ConversationType]]
     prompt_token_ids: Optional[List[List[int]]]
+    multi_modal_data: Optional[List[Optional[Dict[str, Any]]]]
     sampling_params: Optional[Dict[str, Any]]
     session_ids: Optional[List[Hashable]]
 
@@ -42,6 +43,7 @@ class InferenceEngineInterface(ABC):
         prompt_token_ids: List[int],
         num_samples: int,
         sampling_params: Dict[str, Any],
+        multi_modal_data: Optional[Dict[str, Any]] = None,
     ) -> InferenceEngineOutput:
         """Generate multiple independent samples from a single prompt.
 
@@ -68,6 +70,7 @@ class InferenceEngineInterface(ABC):
             input_batch: InferenceEngineInput = {
                 "prompts": None,
                 "prompt_token_ids": [prompt_token_ids],  # Wrap in list for batch of 1
+                "multi_modal_data": [multi_modal_data] if multi_modal_data is not None else None,
                 "sampling_params": sampling_params,
                 "session_ids": None,
             }

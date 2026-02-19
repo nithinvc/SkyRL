@@ -92,8 +92,27 @@ class UnloadModelOutput(BaseModel):
     type: str = "unload_model"
 
 
-class ModelInputChunk(BaseModel):
+class EncodedTextChunk(BaseModel):
+    type: Literal["encoded_text"] = "encoded_text"
     tokens: list[int]
+
+    @property
+    def length(self) -> int:
+        return len(self.tokens)
+
+
+class ImageChunk(BaseModel):
+    type: Literal["image"] = "image"
+    data: bytes
+    format: str
+    expected_tokens: int
+
+    @property
+    def length(self) -> int:
+        return self.expected_tokens
+
+
+ModelInputChunk = EncodedTextChunk | ImageChunk
 
 
 class ModelInput(BaseModel):
@@ -226,6 +245,7 @@ class PreparedModelPassBatch(BaseModel):
 
     # Per-example data (list of lists)
     all_input_ids: list[list[int]]
+    all_input_chunks: list[list[ModelInputChunk]]
     all_targets: list[list[int]]
     all_token_weights: list[list[float]]
     all_sampling_logprobs: list[list[float]]
@@ -248,6 +268,7 @@ class PreparedSampleBatch(BaseModel):
 
     # Per-sample data
     all_prompts: list[list[int]]
+    all_prompt_chunks: list[list[ModelInputChunk]]
     all_sampling_params: list[SamplingParams]
     all_model_ids: list[str]
     all_checkpoint_ids: list[str]

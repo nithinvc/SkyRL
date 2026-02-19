@@ -69,6 +69,8 @@ class Experience:
     num_actions: int
     info: Optional[dict]
     kl: Optional[Float[torch.Tensor, "batch response_len"]] = None
+    pixel_values: Optional[torch.Tensor] = None
+    image_grid_thw: Optional[Integer[torch.Tensor, "batch 3"]] = None
     metadata: Optional[Dict[str, Any]] = None
 
     @torch.no_grad()
@@ -92,6 +94,10 @@ class Experience:
             self.action_mask = to(self.action_mask, device)
         if self.rollout_logprobs is not None:
             self.rollout_logprobs = to(self.rollout_logprobs, device)
+        if self.pixel_values is not None:
+            self.pixel_values = to(self.pixel_values, device)
+        if self.image_grid_thw is not None:
+            self.image_grid_thw = to(self.image_grid_thw, device)
 
     def pin_memory(self):
         self.sequences = pin_memory(self.sequences)
@@ -113,6 +119,10 @@ class Experience:
             self.action_mask = self.action_mask.pin_memory()
         if self.rollout_logprobs is not None:
             self.rollout_logprobs = self.rollout_logprobs.pin_memory()
+        if self.pixel_values is not None:
+            self.pixel_values = self.pixel_values.pin_memory()
+        if self.image_grid_thw is not None:
+            self.image_grid_thw = self.image_grid_thw.pin_memory()
         return self
 
 
