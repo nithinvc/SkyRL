@@ -5,13 +5,15 @@ Currently supports a single model only.
 """
 
 import asyncio
+import io
 import os
 import tarfile
 import tempfile
 
 import torch
 from pydantic import BaseModel
-from transformers import AutoTokenizer, PreTrainedTokenizerBase
+from PIL import Image
+from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase
 
 from skyrl.tinker import types
 from skyrl.backends.backend import AbstractBackend
@@ -109,6 +111,8 @@ class SkyRLTrainBackend(AbstractBackend):
         self._cfg = None
         self._dispatch: WorkerDispatch | None = None
         self._tokenizer = AutoTokenizer.from_pretrained(self.base_model)
+        self._image_processor = None
+        self._image_token_id: int | None = None
         self._inference_engine_client = None
         self._inference_engines_initialized = False
 
@@ -249,17 +253,139 @@ class SkyRLTrainBackend(AbstractBackend):
         # TODO: For now, prefer shutting down the backend and re-launching. Will be improved shortly.
         raise NotImplementedError("Deleting models not yet implemented")
 
+    def _ensure_image_processor(self):
+        if self._image_processor is None:
+            self._image_processor = AutoProcessor.from_pretrained(self.base_model, trust_remote_code=True)
+        return self._image_processor
+
+    def _get_image_token_id(self) -> int:
+        if self._image_token_id is not None:
+            return self._image_token_id
+
+        token_id = getattr(self._tokenizer, "image_token_id", None)
+        if token_id is None:
+            for token in ("<|image_pad|>", "<image>"):
+                candidate = self._tokenizer.convert_tokens_to_ids(token)
+                unk_token_id = getattr(self._tokenizer, "unk_token_id", None)
+                if candidate is not None and candidate >= 0 and candidate != unk_token_id:
+                    token_id = candidate
+                    break
+
+        if token_id is None:
+            raise ValueError(
+                "Unable to determine image token ID for multimodal training. "
+                "Expected tokenizer.image_token_id or known image token mappings."
+            )
+
+        self._image_token_id = int(token_id)
+        return self._image_token_id
+
+    @staticmethod
+    def _chunks_have_images(chunks: list[types.ModelInputChunk]) -> bool:
+        return any(isinstance(chunk, types.ImageChunk) for chunk in chunks)
+
+    def _expand_chunks_to_input_ids(
+        self,
+        chunks: list[types.ModelInputChunk],
+        image_token_id: int,
+    ) -> tuple[list[int], list[bytes]]:
+        input_ids: list[int] = []
+        image_payloads: list[bytes] = []
+        for chunk in chunks:
+            if isinstance(chunk, types.EncodedTextChunk):
+                input_ids.extend(chunk.tokens)
+            elif isinstance(chunk, types.ImageChunk):
+                if chunk.expected_tokens <= 0:
+                    raise ValueError("Image chunks must have expected_tokens > 0.")
+                input_ids.extend([image_token_id] * chunk.expected_tokens)
+                image_payloads.append(chunk.data)
+            else:
+                raise ValueError(f"Unsupported chunk type for training: {type(chunk).__name__}")
+        return input_ids, image_payloads
+
+    def _convert_multimodal_images(self, image_payloads_by_example: list[list[bytes]]) -> dict[str, torch.Tensor]:
+        processor = self._ensure_image_processor()
+        pixel_values_per_example: list[torch.Tensor] = []
+        image_grid_per_example: list[torch.Tensor] = []
+
+        for payloads in image_payloads_by_example:
+            if len(payloads) > 1:
+                raise ValueError("Only one image chunk per example is supported in this initial multimodal path.")
+            if not payloads:
+                raise ValueError("Multimodal batch conversion expected image payloads but found none for an example.")
+
+            pil_image = Image.open(io.BytesIO(payloads[0])).convert("RGB")
+            processed = processor(images=[pil_image], return_tensors="pt")
+
+            if "pixel_values" not in processed:
+                raise ValueError("Image processor did not return `pixel_values`.")
+
+            pixel_values = processed["pixel_values"]
+            if pixel_values.shape[0] != 1:
+                raise ValueError("Expected one processed image per example.")
+            pixel_values_per_example.append(pixel_values.squeeze(0))
+
+            if "image_grid_thw" in processed:
+                image_grid_thw = processed["image_grid_thw"]
+                if image_grid_thw.shape[0] != 1:
+                    raise ValueError("Expected one image_grid_thw row per example.")
+                image_grid_per_example.append(image_grid_thw.squeeze(0))
+
+        pixel_values = torch.stack(pixel_values_per_example, dim=0)
+        batch: dict[str, torch.Tensor] = {"pixel_values": pixel_values}
+        if image_grid_per_example:
+            batch["image_grid_thw"] = torch.stack(image_grid_per_example, dim=0)
+        return batch
+
     def _to_training_batch(self, prepared_batch: types.PreparedModelPassBatch) -> TrainingInputBatch:
         """Convert PreparedModelPassBatch to TrainingInputBatch."""
         if not prepared_batch.all_input_ids:
             return TrainingInputBatch({})
 
-        # SkyRL-Train shifts internally, so provide the full sequence length by
-        # appending the last target token to each already-shifted input.
-        full_sequences = [
-            list(input_ids) + ([targets[-1]] if targets else [])
-            for input_ids, targets in zip(prepared_batch.all_input_ids, prepared_batch.all_targets)
-        ]
+        has_multimodal = any(
+            self._chunks_have_images(chunks)
+            for chunks in prepared_batch.all_input_chunks
+        )
+
+        if has_multimodal and self._cfg.trainer.strategy != "fsdp2":
+            raise ValueError("Multimodal training is currently supported only with FSDP (strategy=fsdp2).")
+        if has_multimodal and self._cfg.generator.backend != "vllm":
+            raise ValueError(
+                "Multimodal training in this implementation requires vLLM generator backend "
+                "(FSDP + vLLM + inline image bytes)."
+            )
+
+        if not has_multimodal:
+            # SkyRL-Train shifts internally, so provide the full sequence length by
+            # appending the last target token to each already-shifted input.
+            full_sequences = [
+                list(input_ids) + ([targets[-1]] if targets else [])
+                for input_ids, targets in zip(prepared_batch.all_input_ids, prepared_batch.all_targets)
+            ]
+            multimodal_tensors: dict[str, torch.Tensor] = {}
+        else:
+            image_token_id = self._get_image_token_id()
+            expanded_input_ids: list[list[int]] = []
+            image_payloads_by_example: list[list[bytes]] = []
+            for chunks, targets in zip(prepared_batch.all_input_chunks, prepared_batch.all_targets):
+                expanded_ids, image_payloads = self._expand_chunks_to_input_ids(chunks, image_token_id)
+                if not image_payloads:
+                    raise ValueError(
+                        "Mixed multimodal and text-only examples are not supported in one training batch yet."
+                    )
+                if len(expanded_ids) != len(targets):
+                    raise ValueError(
+                        "Multimodal input/target length mismatch after chunk expansion. "
+                        "Verify image expected_tokens aligns with target tokenization."
+                    )
+                expanded_input_ids.append(expanded_ids)
+                image_payloads_by_example.append(image_payloads)
+
+            full_sequences = [
+                list(input_ids) + ([targets[-1]] if targets else [])
+                for input_ids, targets in zip(expanded_input_ids, prepared_batch.all_targets)
+            ]
+            multimodal_tensors = self._convert_multimodal_images(image_payloads_by_example)
 
         max_seq_len = max(len(seq) for seq in full_sequences)
         max_response_len = max(len(weights) for weights in prepared_batch.all_token_weights)
@@ -293,6 +419,7 @@ class SkyRLTrainBackend(AbstractBackend):
             "loss_mask": loss_mask_tensor,
             "response_mask": response_mask_tensor,
         }
+        batch_dict.update(multimodal_tensors)
 
         # Include RL fields (action_log_probs, advantages) when data is present
         has_logprobs = any(len(lp) > 0 for lp in prepared_batch.all_sampling_logprobs)
@@ -371,6 +498,31 @@ class SkyRLTrainBackend(AbstractBackend):
         """Sleep inference engines to free GPU memory for training."""
         if self._inference_engines_initialized and self._cfg.trainer.placement.colocate_all:
             asyncio.run(self._inference_engine_client.sleep())
+
+    def _chunks_to_sampling_prompt(
+        self,
+        chunks: list[types.ModelInputChunk],
+    ) -> tuple[list[int], dict[str, object] | None]:
+        image_token_id = self._get_image_token_id()
+        prompt_token_ids: list[int] = []
+        images: list[Image.Image] = []
+
+        for chunk in chunks:
+            if isinstance(chunk, types.EncodedTextChunk):
+                prompt_token_ids.extend(chunk.tokens)
+            elif isinstance(chunk, types.ImageChunk):
+                if chunk.expected_tokens <= 0:
+                    raise ValueError("Image chunks in sampling must have expected_tokens > 0.")
+                prompt_token_ids.extend([image_token_id] * chunk.expected_tokens)
+                images.append(Image.open(io.BytesIO(chunk.data)).convert("RGB"))
+            else:
+                raise ValueError(f"Unsupported chunk type for sampling: {type(chunk).__name__}")
+
+        if not images:
+            return prompt_token_ids, None
+        if len(images) == 1:
+            return prompt_token_ids, {"image": images[0]}
+        return prompt_token_ids, {"image": images}
 
     def forward_backward(
         self,
@@ -519,11 +671,27 @@ class SkyRLTrainBackend(AbstractBackend):
             )
             return {req_id: error for req_id, _, _, _, _ in prepared_batch.request_batch_slices}
 
+        has_multimodal = any(self._chunks_have_images(chunks) for chunks in prepared_batch.all_prompt_chunks)
+        if has_multimodal and self._cfg.generator.backend != "vllm":
+            error = types.ErrorResponse(
+                error=(
+                    "Multimodal sampling is currently supported only with vLLM inference backend "
+                    "(FSDP + vLLM + inline image bytes)."
+                ),
+                status="error",
+            )
+            return {req_id: error for req_id, _, _, _, _ in prepared_batch.request_batch_slices}
+
         # 3. Sample all prompts in parallel
         async def sample_all():
             tasks = []
             for i in range(len(prepared_batch.all_prompts)):
-                prompt = prepared_batch.all_prompts[i]
+                prompt_chunks = prepared_batch.all_prompt_chunks[i]
+                if has_multimodal:
+                    prompt, multi_modal_data = self._chunks_to_sampling_prompt(prompt_chunks)
+                else:
+                    prompt = prepared_batch.all_prompts[i]
+                    multi_modal_data = None
                 sampling_params = prepared_batch.all_sampling_params[i]
 
                 # Pass through common fields; only stop needs name translation
@@ -546,6 +714,7 @@ class SkyRLTrainBackend(AbstractBackend):
                         prompt_token_ids=prompt,
                         num_samples=1,  # Tinker batches multiple samples separately
                         sampling_params=params_dict,
+                        multi_modal_data=multi_modal_data,
                     )
                 )
 

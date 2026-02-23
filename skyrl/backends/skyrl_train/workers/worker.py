@@ -767,6 +767,8 @@ class PolicyWorkerBase(Worker):
         loss_mask = experience.loss_mask
         action_mask = experience.action_mask
         rollout_action_logprobs = experience.rollout_logprobs
+        pixel_values = experience.pixel_values
+        image_grid_thw = experience.image_grid_thw
 
         # Determine which loss function to use
         resolved_loss_name = loss_fn if loss_fn is not None else self.cfg.trainer.algorithm.policy_loss_type
@@ -800,6 +802,8 @@ class PolicyWorkerBase(Worker):
                 return_output=True,
                 compute_entropy=True,
                 entropy_requires_grad=self.cfg.trainer.algorithm.use_entropy_loss,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
             )
             # loss function
             # TODO: recompute advantages
@@ -1008,6 +1012,8 @@ class PolicyWorkerBase(Worker):
         sequences = micro_batch["sequences"]
         response_length = micro_batch.metadata["response_length"]
         attention_mask = micro_batch["attention_mask"]
+        pixel_values = micro_batch.get("pixel_values")
+        image_grid_thw = micro_batch.get("image_grid_thw")
 
         with torch.no_grad(), torch.autocast(dtype=torch.bfloat16, device_type="cuda"):
             policy_logprob = self.model(
@@ -1016,6 +1022,8 @@ class PolicyWorkerBase(Worker):
                 attention_mask,
                 return_output=False,
                 temperature=self.cfg.generator.sampling_params.temperature,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
             )
         policy_logprob = policy_logprob.to("cpu")
         output = TrainingOutputBatch(
@@ -1250,8 +1258,17 @@ class RefWorkerBase(Worker):
         sequences = micro_batch["sequences"]
         response_length = micro_batch.metadata["response_length"]
         attention_mask = micro_batch["attention_mask"]
+        pixel_values = micro_batch.get("pixel_values")
+        image_grid_thw = micro_batch.get("image_grid_thw")
         with torch.no_grad(), torch.autocast(dtype=torch.bfloat16, device_type="cuda"):
-            log_probs = self.model(sequences, response_length, attention_mask, return_output=False)
+            log_probs = self.model(
+                sequences,
+                response_length,
+                attention_mask,
+                return_output=False,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+            )
         log_probs = log_probs.to("cpu")
         output = TrainingOutputBatch(
             {"output": log_probs},

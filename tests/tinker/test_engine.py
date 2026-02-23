@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlmodel import Session, SQLModel
 
-from skyrl.tinker.engine import TinkerEngine, prepare_model_pass_batch
+from skyrl.tinker.engine import TinkerEngine, prepare_model_pass_batch, prepare_sample_batch
 from skyrl.tinker.config import EngineConfig
 from skyrl.tinker import types
 from skyrl.tinker.db_models import SessionDB, ModelDB
@@ -111,7 +111,7 @@ def test_prepare_model_pass_batch_loss_fn_and_config(
 ):
     """Test that prepare_model_pass_batch preserves loss_fn and loss_fn_config values."""
     datum = types.Datum(
-        model_input=types.ModelInput(chunks=[types.ModelInputChunk(tokens=[1, 2, 3])]),
+        model_input=types.ModelInput(chunks=[types.EncodedTextChunk(tokens=[1, 2, 3])]),
         loss_fn_inputs=types.LossFnInputs(
             target_tokens=types.TensorData(data=[2, 3, 4]),
             weights=types.TensorData(data=[1.0, 1.0, 1.0]),
@@ -134,3 +134,53 @@ def test_prepare_model_pass_batch_loss_fn_and_config(
     batch = prepare_model_pass_batch(requests)
     assert batch.all_loss_fns == [loss_fn]
     assert batch.all_loss_fn_configs == [loss_fn_config]
+
+
+def test_prepare_model_pass_batch_preserves_image_chunks():
+    datum = types.Datum(
+        model_input=types.ModelInput(
+            chunks=[
+                types.EncodedTextChunk(tokens=[1, 2]),
+                types.ImageChunk(data=b"img", format="jpeg", expected_tokens=4),
+                types.EncodedTextChunk(tokens=[3]),
+            ]
+        ),
+        loss_fn_inputs=types.LossFnInputs(
+            target_tokens=types.TensorData(data=[2, 3, 4, 5, 6, 7, 8]),
+            weights=types.TensorData(data=[1.0] * 7),
+            advantages=types.TensorData(data=[]),
+            logprobs=types.TensorData(data=[]),
+        ),
+    )
+
+    requests = {
+        "req1": (
+            "model1",
+            types.ForwardBackwardInput(data=[datum], loss_fn="cross_entropy"),
+        ),
+    }
+
+    batch = prepare_model_pass_batch(requests)
+    assert len(batch.all_input_chunks[0]) == 3
+    assert isinstance(batch.all_input_chunks[0][1], types.ImageChunk)
+    assert batch.request_batch_slices == [("req1", "model1", 0, 1)]
+
+
+def test_prepare_sample_batch_preserves_image_chunks_and_fanout():
+    request = types.SampleInput(
+        prompt=types.ModelInput(
+            chunks=[
+                types.EncodedTextChunk(tokens=[11]),
+                types.ImageChunk(data=b"img", format="jpeg", expected_tokens=3),
+            ]
+        ),
+        sampling_params=types.SamplingParams(temperature=0.0, max_tokens=8, seed=7),
+        num_samples=2,
+        checkpoint_id="ckpt",
+        prompt_logprobs=False,
+    )
+    batch = prepare_sample_batch({"req1": ("model1", request)})
+
+    assert len(batch.all_prompt_chunks) == 2
+    assert all(isinstance(chunks[1], types.ImageChunk) for chunks in batch.all_prompt_chunks)
+    assert batch.request_batch_slices == [("req1", "model1", 0, 2, False)]

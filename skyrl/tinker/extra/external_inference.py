@@ -91,7 +91,15 @@ class ExternalInferenceClient:
 
         For base model sampling (no LoRA), the request is sent directly using the base model name.
         """
-        prompt_tokens = [token for chunk in request.prompt.chunks for token in chunk.tokens]
+        prompt_tokens = []
+        for chunk in request.prompt.chunks:
+            if isinstance(chunk, types.EncodedTextChunk):
+                prompt_tokens.extend(chunk.tokens)
+            else:
+                raise ValueError(
+                    "External inference currently supports only encoded text chunks. "
+                    "Use FSDP + vLLM backend for image chunk sampling."
+                )
 
         if base_model:
             # Base model sampling: use the model name directly, no LoRA checkpoint needed

@@ -26,6 +26,15 @@ from skyrl.backends.utils import log_timing
 from skyrl.utils.log import logger
 
 
+def _flatten_encoded_text_tokens(chunks: list[types.ModelInputChunk]) -> list[int]:
+    """Flatten encoded text chunks to token IDs, skipping non-text chunks."""
+    tokens: list[int] = []
+    for chunk in chunks:
+        if isinstance(chunk, types.EncodedTextChunk):
+            tokens.extend(chunk.tokens)
+    return tokens
+
+
 def _model_not_found_error(model_id: str) -> types.ErrorResponse:
     """Log and return an ErrorResponse for a request targeting a model that isn't loaded."""
     logger.info(
@@ -55,6 +64,7 @@ def prepare_sample_batch(
         PreparedSampleBatch with all data extracted from requests
     """
     all_prompts = []
+    all_prompt_chunks = []
     all_sampling_params = []
     all_model_ids = []
     all_checkpoint_ids = []
@@ -67,7 +77,8 @@ def prepare_sample_batch(
         request_start = len(all_prompts)
 
         # Expand requests for num_samples
-        prompt_tokens = [token for chunk in request_data.prompt.chunks for token in chunk.tokens]
+        prompt_chunks = request_data.prompt.chunks
+        prompt_tokens = _flatten_encoded_text_tokens(prompt_chunks)
         checkpoint_path = ""
         if model_id and request_data.checkpoint_id and checkpoints_base:
             checkpoint_path = str(
@@ -75,6 +86,7 @@ def prepare_sample_batch(
             )
         for sample_idx in range(request_data.num_samples):
             all_prompts.append(prompt_tokens)
+            all_prompt_chunks.append(list(prompt_chunks))
             # Derive a unique seed per sample so that num_samples > 1 produces
             # diverse sequences, matching vLLM's behavior (seed + index).
             sample_params = request_data.sampling_params.model_copy(
@@ -91,6 +103,7 @@ def prepare_sample_batch(
 
     return types.PreparedSampleBatch(
         all_prompts=all_prompts,
+        all_prompt_chunks=all_prompt_chunks,
         all_sampling_params=all_sampling_params,
         all_model_ids=all_model_ids,
         all_checkpoint_ids=all_checkpoint_ids,
@@ -115,6 +128,7 @@ def prepare_model_pass_batch(
         PreparedModelPassBatch with all data extracted from requests
     """
     all_input_ids = []
+    all_input_chunks = []
     all_targets = []
     all_token_weights = []
     all_model_ids = []
@@ -131,8 +145,10 @@ def prepare_model_pass_batch(
             )
         request_start = len(all_input_ids)
         for item in request_data.data:
-            tokens = [t for chunk in item.model_input.chunks for t in chunk.tokens]
+            chunks = item.model_input.chunks
+            tokens = _flatten_encoded_text_tokens(chunks)
             all_input_ids.append(tokens)
+            all_input_chunks.append(list(chunks))
             loss_fn_inputs = item.loss_fn_inputs
             all_targets.append(loss_fn_inputs.target_tokens.data)
             all_token_weights.append(loss_fn_inputs.weights.data)
@@ -146,6 +162,7 @@ def prepare_model_pass_batch(
 
     return types.PreparedModelPassBatch(
         all_input_ids=all_input_ids,
+        all_input_chunks=all_input_chunks,
         all_targets=all_targets,
         all_token_weights=all_token_weights,
         all_sampling_logprobs=all_sampling_logprobs,

@@ -83,6 +83,8 @@ class BatchIterator:
             action_mask=batch.get("response_mask"),
             num_actions=batch.metadata["response_length"],  # int
             rollout_logprobs=batch.get("rollout_logprobs"),
+            pixel_values=batch.get("pixel_values"),
+            image_grid_thw=batch.get("image_grid_thw"),
             # additional info
             # can be used to log metrics etc for micro-batches in the worker
             info={},

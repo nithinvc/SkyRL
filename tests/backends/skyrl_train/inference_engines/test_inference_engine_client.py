@@ -310,6 +310,47 @@ def test_generate_batched_routing_and_order_preservation(num_prompts, with_sessi
         assert out["stop_reasons"][i] == "stop"
 
 
+@pytest.mark.parametrize("num_engines", [1, 3, 8])
+def test_generate_batched_preserves_multimodal_pairing(num_engines):
+    class MockEngine:
+        async def generate(self, input_batch):
+            prompt_token_ids = input_batch["prompt_token_ids"]
+            mm_data = input_batch.get("multi_modal_data")
+            responses = []
+            response_ids = []
+            stop_reasons = []
+            for i, ids in enumerate(prompt_token_ids):
+                image_marker = mm_data[i]["image"] if mm_data and mm_data[i] else "none"
+                responses.append(f"{ids[0]}:{image_marker}")
+                response_ids.append([ids[0]])
+                stop_reasons.append("stop")
+            return {
+                "responses": responses,
+                "response_ids": response_ids,
+                "stop_reasons": stop_reasons,
+            }
+
+    cfg = _make_min_cfg()
+    engines = [MockEngine() for _ in range(num_engines)]
+    client = InferenceEngineClient(engines=engines, tokenizer=object(), full_config=cfg)
+
+    prompt_token_ids = [[10], [20], [30], [40]]
+    multi_modal_data = [{"image": "img0"}, None, {"image": "img2"}, None]
+    out = asyncio.run(
+        client.generate(
+            {
+                "prompts": None,
+                "prompt_token_ids": prompt_token_ids,
+                "multi_modal_data": multi_modal_data,
+                "sampling_params": None,
+                "session_ids": None,
+            }
+        )
+    )
+
+    assert out["responses"] == ["10:img0", "20:none", "30:img2", "40:none"]
+
+
 # -----------------------------
 # Test for route_prompts_to_engines function that routes prompts to inference engines
 # in inference engine client.

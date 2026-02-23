@@ -267,8 +267,16 @@ class HFModelWrapper(nn.Module):
         return_output=False,
         compute_entropy=False,
         entropy_requires_grad=True,
+        pixel_values: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Returns action log probs"""
+        multimodal_kwargs = {}
+        if pixel_values is not None:
+            multimodal_kwargs["pixel_values"] = pixel_values
+        if image_grid_thw is not None:
+            multimodal_kwargs["image_grid_thw"] = image_grid_thw
+
         position_ids = attention_mask.long().cumsum(-1) - 1
         position_ids.masked_fill_(attention_mask == 0, 1)
 
@@ -306,9 +314,19 @@ class HFModelWrapper(nn.Module):
         if self.use_sample_packing and self.attn_implementation == "flash_attention_2":
             # NOTE (sumanthrh): Don't use attention mask. position_ids is enough.
             # Not using attention mask leads to higher perf since flash attention varlen func is enabled
-            output = self.model(sequences_fwd, attention_mask=None, position_ids=position_ids_fwd)
+            output = self.model(
+                sequences_fwd,
+                attention_mask=None,
+                position_ids=position_ids_fwd,
+                **multimodal_kwargs,
+            )
         else:
-            output = self.model(sequences_fwd, attention_mask=attention_mask_fwd, position_ids=position_ids_fwd)
+            output = self.model(
+                sequences_fwd,
+                attention_mask=attention_mask_fwd,
+                position_ids=position_ids_fwd,
+                **multimodal_kwargs,
+            )
 
         logits_BSV = output["logits"]
         logits_BSV.div_(temperature)
