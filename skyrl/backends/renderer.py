@@ -39,11 +39,15 @@ class VLLMRenderer:
         self._model_name = model_name
 
     def __call__(self, model_inputs: list[ModelInput]) -> list[RenderedModelInput]:
-        """Sync entry point. Renders all ModelInputs, resolving image placeholders via vLLM."""
-        return asyncio.run(self._render_all(model_inputs))
+        """Synchronous entry point. Renders all ModelInputs, resolving image placeholders via vLLM."""
 
-    async def _render_all(self, model_inputs: list[ModelInput]) -> list[RenderedModelInput]:
-        return list(await asyncio.gather(*[self._render_model_input(mi) for mi in model_inputs]))
+        async def _render_all():
+            tasks = []
+            for mi in model_inputs:
+                tasks.append(self._render_model_input(mi))
+            return await asyncio.gather(*tasks)
+
+        return asyncio.run(_render_all())
 
     async def _render_model_input(self, model_input: ModelInput) -> RenderedModelInput:
         # Collect image chunks with their indices
@@ -63,7 +67,7 @@ class VLLMRenderer:
         # Render images via vLLM
         placeholder_tokens, placeholders, mm_kwargs = await self._render_images(image_chunks)
 
-        # Assemble prompt_ids walking chunks in order
+        # Assemble prompt_ids and update placeholder offsets by walking chunks in order
         prompt_ids = []
         mm_placeholders: list[MultiModalPlaceholder] = []
         image_idx = 0
@@ -71,10 +75,10 @@ class VLLMRenderer:
             if isinstance(chunk, EncodedTextChunk):
                 prompt_ids.extend(chunk.tokens)
             elif isinstance(chunk, (ImageChunk, ImageAssetPointerChunk)):
-                ph = placeholders[image_idx]
-                ph.offset = len(prompt_ids)
+                placeholder = placeholders[image_idx]
+                placeholder.offset = len(prompt_ids)
                 prompt_ids.extend(placeholder_tokens[image_idx])
-                mm_placeholders.append(ph)
+                mm_placeholders.append(placeholder)
                 image_idx += 1
 
         return RenderedModelInput(
@@ -92,11 +96,12 @@ class VLLMRenderer:
         Returns:
             - placeholder tokens per image (spliced from the render response)
             - MultiModalPlaceholder stubs (offset=0, adjusted by caller)
-            - multi_modal_kwargs (empty dict for now)
+            - multi_modal_kwargs (Empty till upstreamed in vLLM)
         """
         content_parts = []
         for chunk in image_chunks:
             if isinstance(chunk, ImageChunk):
+                # TODO (nithinc): see if there is a more efficient way - maybe we just pass the base64 string?
                 b64_data = base64.b64encode(chunk.data).decode("ascii")
                 url = f"data:image/{chunk.format};base64,{b64_data}"
             else:  # ImageAssetPointerChunk
@@ -114,21 +119,21 @@ class VLLMRenderer:
 
         token_ids = response["token_ids"]
         features = response.get("features", {})
-        mm_ph = features.get("mm_placeholders", {}).get("image", [])
+        # mm_placeholders: dict[modality str, PlaceholderInfo]
+        image_placeholders = features.get("mm_placeholders", {}).get("image", [])
 
-        if len(mm_ph) != len(image_chunks):
-            raise RuntimeError(f"Expected {len(image_chunks)} image placeholders, got {len(mm_ph)}")
+        if len(image_placeholders) != len(image_chunks):
+            raise RuntimeError(f"Expected {len(image_chunks)} image placeholders, got {len(image_placeholders)}")
 
         placeholder_tokens: list[list[int]] = []
         placeholders: list[MultiModalPlaceholder] = []
-        for i, ph in enumerate(mm_ph):
-            offset = ph["offset"]
-            length = ph["length"]
+        for i, placeholder in enumerate(image_placeholders):
+            offset = placeholder["offset"]
+            length = placeholder["length"]
             tokens = token_ids[offset : offset + length]
             placeholder_tokens.append(tokens)
             placeholders.append(MultiModalPlaceholder(offset=0, length=length))
 
-            # Soft validation: warn if expected_tokens doesn't match
             chunk = image_chunks[i]
             if chunk.expected_tokens is not None and chunk.expected_tokens != length:
                 logger.warning(
