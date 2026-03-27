@@ -16,7 +16,7 @@ requires-python = ">=3.10"
 
 dependencies = [
     "func_timeout",
-    "pandas", 
+    "pandas",
     "requests",
     "omegaconf",
 ]
@@ -28,8 +28,11 @@ Repository = "https://github.com/NovaSky-AI/SkyRL"
 include = ["skyrl_gym*"]
 
 [project.optional-dependencies]
+visgym = [
+    "gymnasium[envs] @ git+https://github.com/visgym/VisGym.git@main",
+]
 dev = [
-    "pytest"
+    "pytest",
 ]
 
 [tool.black]

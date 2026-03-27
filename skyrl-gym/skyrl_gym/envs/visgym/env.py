@@ -1,16 +1,9 @@
-import sys
-import os
 from typing import Any, Dict, List, Tuple
 
-from skyrl_gym.envs.base_text_env import BaseTextEnv, BaseTextEnvStepOutput, ConversationType
-from skyrl_gym.envs.visgym.utils import encode_image_to_base64, extract_action, make_image_message
-
-# Add VisGym to path so gymnasium imports resolve to the local fork
-_VISGYM_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "VisGym")
-if os.path.isdir(_VISGYM_DIR):
-    sys.path.insert(0, os.path.abspath(_VISGYM_DIR))
-
 import gymnasium
+
+from skyrl_gym.envs.base_text_env import BaseTextEnv, BaseTextEnvStepOutput, ConversationType
+from skyrl_gym.envs.visgym.utils import extract_action, make_image_message
 
 
 class VisGymEnv(BaseTextEnv):

@@ -1,16 +1,13 @@
 """Smoke test for the VisGym → BaseTextEnv wrapper.
 
+Requires both `gymnasium` (VisGym) and `skyrl_gym` to be installed:
+    pip install -e VisGym/
+    pip install -e skyrl-gym/
+
 Run: python -m skyrl_gym.envs.visgym.test_env
 """
 
 import base64
-import sys
-import os
-
-# Ensure VisGym is importable
-_SKYRL_ROOT = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
-sys.path.insert(0, os.path.join(_SKYRL_ROOT, "VisGym"))
-sys.path.insert(0, os.path.join(_SKYRL_ROOT, "skyrl-gym"))
 
 from skyrl_gym.envs.visgym.env import VisGymEnv
 from skyrl_gym.envs.visgym.utils import extract_action
