@@ -24,8 +24,15 @@ import os
 import datasets
 
 
-QUESTION_TEMPLATE = ("You are a math/geometry expert. Solve the user's question carefully and verify your work. Reason step by step as an internal monologue wrapped inside <think>...</think> tags. "
-r"Solve the following math problem step by step. The last line of your response should be of the form Answer: \boxed{{$Answer}} where $Answer is the answer to the problem." "\n{Question}")
+QUESTION_TEMPLATE = (
+    "You are a math/geometry expert. Solve the user's question carefully and verify your work. "
+    "Reason step by step as an internal monologue wrapped inside <think>...</think> tags.\n\n"
+    "You have access to a tool to check your answer:\n"
+    '  <tool_call>{{"name": "calc_score", "arguments": {{"answer": "<your_answer>"}}}}</tool_call>\n\n'
+    "Use this tool to verify your solution. If your answer is wrong, you can try again with a different approach.\n"
+    r"When you are confident in your final answer, present it as: Answer: \boxed{{$Answer}}"
+    "\n\n{Question}"
+)
 
 
 def make_map_fn(split):
@@ -55,6 +62,7 @@ def make_map_fn(split):
                     "content": content,
                 },
             ],
+            "env_class": "geometry3k",
             "reward_spec": {
                 "method": "rule",
                 "ground_truth": answer,
