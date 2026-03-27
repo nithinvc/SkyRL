@@ -17,6 +17,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from skyrl.backends.backend import AbstractBackend
 from skyrl.backends.renderer import render_model_input
+from skyrl.backends.skyrl_train.training_batch import TensorList
 from skyrl.backends.skyrl_train.inference_engines.inference_engine_client import (
     InferenceEngineClient,
 )
@@ -121,6 +122,11 @@ class SkyRLTrainBackend(AbstractBackend):
         self._tokenizer: AutoTokenizer = get_tokenizer(self.base_model)
         self._inference_engine_client = None
         self._inference_engines_initialized = False
+        self._renderer = render_model_input
+
+    def set_renderer(self, renderer):
+        """Set a custom renderer (e.g. VLLMRenderer for multi-modal models)."""
+        self._renderer = renderer
 
     def has_model(self, model_id: str) -> bool:
         return self._model_id == model_id
@@ -266,8 +272,9 @@ class SkyRLTrainBackend(AbstractBackend):
         if not prepared_batch.all_model_inputs:
             return TrainingInputBatch({})
 
-        # Extract token IDs from ModelInput chunks
-        all_input_ids = [r.prompt_ids for r in render_model_input(prepared_batch.all_model_inputs)]
+        # Render ModelInputs (text-only or multi-modal depending on renderer)
+        rendered = self._renderer(prepared_batch.all_model_inputs)
+        all_input_ids = [r.prompt_ids for r in rendered]
 
         # SkyRL-Train shifts internally, so provide the full sequence length by
         # appending the last target token to each already-shifted input.
@@ -317,6 +324,44 @@ class SkyRLTrainBackend(AbstractBackend):
         if has_advantages:
             batch_dict["advantages"] = torch.tensor(advantages_list, dtype=torch.float32)
 
+        # Decode multi-modal kwargs_data into pixel_values / image_grid_thw
+        has_vision = any(r.multi_modal_kwargs for r in rendered)
+        if has_vision:
+            from vllm.entrypoints.serve.disagg.mm_serde import decode_mm_kwargs_item
+
+            pixel_values_list: list[torch.Tensor] = []
+            image_grid_thw_list: list[torch.Tensor] = []
+            for r in rendered:
+                if r.multi_modal_kwargs and "image" in r.multi_modal_kwargs:
+                    pv_parts: list[torch.Tensor] = []
+                    thw_parts: list[torch.Tensor] = []
+                    for b64_str in r.multi_modal_kwargs["image"]:
+                        item = decode_mm_kwargs_item(b64_str)
+                        data = item.get_data()
+                        if "pixel_values" in data:
+                            pv = data["pixel_values"]
+                            if isinstance(pv, torch.Tensor):
+                                pv_parts.append(pv)
+                        if "image_grid_thw" in data:
+                            thw = data["image_grid_thw"]
+                            if isinstance(thw, torch.Tensor):
+                                thw_parts.append(thw)
+                    pixel_values_list.append(torch.cat(pv_parts, dim=0) if pv_parts else torch.empty(0))
+                    image_grid_thw_list.append(
+                        torch.cat(thw_parts, dim=0) if thw_parts else torch.empty(0, 3, dtype=torch.long)
+                    )
+                else:
+                    # Text-only sample in mixed batch: zero-length placeholder
+                    dim = (
+                        pixel_values_list[0].shape[-1]
+                        if pixel_values_list and pixel_values_list[0].numel() > 0
+                        else 0
+                    )
+                    pixel_values_list.append(torch.empty(0, dim))
+                    image_grid_thw_list.append(torch.empty(0, 3, dtype=torch.long))
+            batch_dict["pixel_values"] = TensorList(pixel_values_list)
+            batch_dict["image_grid_thw"] = TensorList(image_grid_thw_list)
+
         batch = TrainingInputBatch(batch_dict)
         batch.metadata = {"response_length": max_response_len}
         return batch
@@ -343,16 +388,21 @@ class SkyRLTrainBackend(AbstractBackend):
             return batch, 0
 
         new_tensors = {}
-        for key, tensor in batch.items():
-            if tensor is not None:
-                if key == "loss_mask":
+        for key, value in batch.items():
+            if value is not None:
+                if isinstance(value, TensorList):
+                    # TensorList: repeat entries cyclically for padding
+                    pad_tensors = [value[i % len(value)].clone() for i in range(pad_size)]
+                    new_tensors[key] = TensorList.cat([value, TensorList(pad_tensors)])
+                elif key == "loss_mask":
                     # Padding entries must not contribute to the loss
-                    additional_dims = tensor.shape[1:]
-                    padding_tensor = torch.zeros(pad_size, *additional_dims, dtype=tensor.dtype, device=tensor.device)
+                    additional_dims = value.shape[1:]
+                    padding_tensor = torch.zeros(pad_size, *additional_dims, dtype=value.dtype, device=value.device)
+                    new_tensors[key] = torch.cat([value, padding_tensor], dim=0)
                 else:
                     # Clone real data so shapes/dtypes are valid for the model
-                    padding_tensor = tensor[torch.arange(pad_size) % tensor.shape[0]].clone()
-                new_tensors[key] = torch.cat([tensor, padding_tensor], dim=0)
+                    padding_tensor = value[torch.arange(pad_size) % value.shape[0]].clone()
+                    new_tensors[key] = torch.cat([value, padding_tensor], dim=0)
 
         padded = TrainingInputBatch(new_tensors)
         padded.metadata = batch.metadata
@@ -535,7 +585,7 @@ class SkyRLTrainBackend(AbstractBackend):
             return {req_id: error for req_id, _, _, _, _ in prepared_batch.request_batch_slices}
 
         # 3. Sample all prompts in parallel
-        all_input_ids = [r.prompt_ids for r in render_model_input(prepared_batch.all_model_inputs)]
+        all_input_ids = [r.prompt_ids for r in self._renderer(prepared_batch.all_model_inputs)]
 
         async def sample_all():
             tasks = []
