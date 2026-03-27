@@ -231,6 +231,126 @@ class RemoteInferenceClient:
         raise last_exc  # type: ignore[misc]
 
     # ---------------------------
+    # Multi-Modal Rendering
+    # ---------------------------
+
+    async def _render_mm_prompt(
+        self,
+        chunks: List[Dict[str, Any]],
+    ) -> Tuple[List[int], Optional[Dict[str, Any]]]:
+        """Render a multi-modal prompt, resolving image chunks via /v1/chat/completions/render.
+
+        For text-only prompts (no image chunks), returns flattened token IDs and None features.
+        For multi-modal prompts, calls the render endpoint to get image placeholder tokens
+        and multimodal features, then splices them into the token stream.
+
+        Args:
+            chunks: List of prompt chunk dicts (Tinker format).
+                - Text: {"type": "encoded_text", "tokens": [...]}
+                - Image: {"type": "image", "data": "<base64>", "format": "jpeg"|"png"}
+
+        Returns:
+            Tuple of (token_ids, features) where features is a MultiModalFeatures dict
+            for the generate endpoint, or None if text-only.
+        """
+        image_indices = [i for i, c in enumerate(chunks) if c.get("type") == "image"]
+
+        if not image_indices:
+            token_ids = [tok for c in chunks for tok in c.get("tokens", [])]
+            return token_ids, None
+
+        image_chunks = [chunks[i] for i in image_indices]
+        rendered_images = await self._render_image_chunks(image_chunks)
+
+        token_ids: List[int] = []
+        mm_placeholders: List[Dict[str, int]] = []
+        mm_hashes: List[str] = []
+        kwargs_data_items: List[Optional[str]] = []
+        has_kwargs_data = False
+
+        image_idx = 0
+        for chunk in chunks:
+            if chunk.get("type") == "image":
+                ri = rendered_images[image_idx]
+                offset = len(token_ids)
+                token_ids.extend(ri["placeholder_tokens"])
+                mm_placeholders.append({"offset": offset, "length": len(ri["placeholder_tokens"])})
+                if ri.get("mm_hash") is not None:
+                    mm_hashes.append(ri["mm_hash"])
+                if ri.get("kwargs_data") is not None:
+                    has_kwargs_data = True
+                kwargs_data_items.append(ri.get("kwargs_data"))
+                image_idx += 1
+            else:
+                token_ids.extend(chunk.get("tokens", []))
+
+        features: Dict[str, Any] = {
+            "mm_hashes": {"image": mm_hashes},
+            "mm_placeholders": {"image": mm_placeholders},
+        }
+        if has_kwargs_data:
+            features["kwargs_data"] = {"image": kwargs_data_items}
+
+        return token_ids, features
+
+    async def _render_image_chunks(
+        self,
+        image_chunks: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Render image chunks via /v1/chat/completions/render.
+
+        Sends all images in a single render call and extracts per-image
+        placeholder tokens and multimodal metadata.
+
+        Args:
+            image_chunks: List of image chunk dicts with "data" (base64) and "format" keys.
+
+        Returns:
+            List of dicts per image with keys: placeholder_tokens, mm_hash, kwargs_data.
+        """
+        content_parts: List[Dict[str, Any]] = []
+        for chunk in image_chunks:
+            b64_data = chunk["data"]
+            fmt = chunk.get("format", "jpeg")
+            url = f"data:image/{fmt};base64,{b64_data}"
+            content_parts.append({"type": "image_url", "image_url": {"url": url}})
+
+        effective_model = self.active_lora_name if self.active_lora_name else self.model_name
+        payload = {
+            "json": {
+                "model": effective_model,
+                "messages": [{"role": "user", "content": content_parts}],
+            }
+        }
+
+        response = await self.render_chat_completion(payload)
+
+        token_ids = response["token_ids"]
+        features = response.get("features") or {}
+        image_placeholders = features.get("mm_placeholders", {}).get("image", [])
+        image_hashes = features.get("mm_hashes", {}).get("image", [])
+        image_kwargs = (features.get("kwargs_data") or {}).get("image", [])
+
+        if len(image_placeholders) != len(image_chunks):
+            raise RuntimeError(
+                f"Expected {len(image_chunks)} image placeholders from render, "
+                f"got {len(image_placeholders)}"
+            )
+
+        rendered: List[Dict[str, Any]] = []
+        for i, placeholder in enumerate(image_placeholders):
+            offset = placeholder["offset"]
+            length = placeholder["length"]
+            tokens = token_ids[offset : offset + length]
+            rendered.append({
+                "placeholder_tokens": tokens,
+                "mm_hash": image_hashes[i] if i < len(image_hashes) else None,
+                "kwargs_data": image_kwargs[i] if i < len(image_kwargs) else None,
+            })
+
+        return rendered
+
+    # ---------------------------
     # Data Plane
     # ---------------------------
 
@@ -382,8 +502,9 @@ class RemoteInferenceClient:
         num_samples = body.get("num_samples", 1)
         tinker_params = body.get("sampling_params", {})
 
-        # Flatten prompt chunks → token IDs
-        token_ids = [tok for chunk in prompt.get("chunks", []) for tok in chunk.get("tokens", [])]
+        # Render multi-modal prompt (text-only fast path if no images)
+        chunks = prompt.get("chunks", [])
+        token_ids, features = await self._render_mm_prompt(chunks)
 
         # Map Tinker SamplingParams → vLLM format
         sampling_params: Dict[str, Any] = {
@@ -407,11 +528,13 @@ class RemoteInferenceClient:
 
         effective_model = self.active_lora_name if self.active_lora_name else self.model_name
 
-        payload = {
+        payload: Dict[str, Any] = {
             "sampling_params": sampling_params,
             "model": effective_model,
             "token_ids": token_ids,
         }
+        if features is not None:
+            payload["features"] = features
 
         headers = {"Content-Type": "application/json"}
         if session_id:
