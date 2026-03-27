@@ -41,3 +41,8 @@ register(
     id="geometry3k",
     entry_point="skyrl_gym.envs.geometry3k.env:Geometry3kEnv",
 )
+
+register(
+    id="visgym",
+    entry_point="skyrl_gym.envs.visgym.env:VisGymEnv",
+)
