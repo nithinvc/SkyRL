@@ -217,7 +217,7 @@ def test_vlm_renderer_kwargs_data_decodes_to_tensors(module_scoped_ray_init_fixt
             assert isinstance(pv, torch.Tensor), f"pixel_values should be a tensor, got {type(pv)}"
             assert isinstance(thw, torch.Tensor), f"image_grid_thw should be a tensor, got {type(thw)}"
             assert pv.ndim >= 1 and pv.shape[0] > 0, f"pixel_values should be non-empty, got shape {pv.shape}"
-            assert thw.ndim == 2 and thw.shape[1] == 3, f"image_grid_thw should be [N, 3], got shape {thw.shape}"
+            assert thw.ndim == 1 and thw.shape[0] == 3, f"per-item image_grid_thw should be [3], got shape {thw.shape}"
 
     finally:
         if engines is not None:
