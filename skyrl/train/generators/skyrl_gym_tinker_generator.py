@@ -32,7 +32,7 @@ from skyrl.train.generators.utils import (
     apply_overlong_filtering,
     get_rollout_metrics,
 )
-from skyrl.train.renderers.base import Message, Renderer, get_text_content
+from skyrl.train.renderers.base import Message, RenderContext, Renderer, get_text_content
 from skyrl_gym.envs.base_text_env import BaseTextEnvStepOutput
 
 
@@ -50,9 +50,15 @@ class TrajectoryOutput:
     model_input: Optional[ModelInput] = None
 
 
-def _count_text_tokens(model_input: ModelInput) -> int:
-    """Count text tokens in a ModelInput (excludes image placeholder tokens)."""
-    return sum(len(c.tokens) for c in model_input.chunks if isinstance(c, EncodedTextChunk))
+def _count_chunk_tokens(chunks) -> int:
+    """Count all tokens in a list of chunks (text tokens + image placeholder tokens)."""
+    total = 0
+    for c in chunks:
+        if isinstance(c, EncodedTextChunk):
+            total += len(c.tokens)
+        elif isinstance(c, ImageChunk) and c.expected_tokens is not None:
+            total += c.expected_tokens
+    return total
 
 
 def _flatten_text_tokens(model_input: ModelInput) -> List[int]:
@@ -68,7 +74,8 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
     """Multi-modal multi-turn generator using Tinker chunks + RemoteInferenceClient.sample().
 
     Uses a Renderer to handle chat template formatting and image encoding.
-    Re-renders the full conversation each turn (extension property ensures prefix consistency).
+    Accumulates chunks append-only during the generation loop to avoid
+    tokenization boundary mismatches from re-rendering.
     """
 
     def __init__(
@@ -110,14 +117,16 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
         sampling_params: Optional[Dict[str, Any]] = None,
         trajectory_id: Optional[TrajectoryID] = None,
     ) -> TrajectoryOutput:
-        """Multi-turn generation loop using Tinker chunks.
+        """Append-only multi-turn generation loop using Tinker chunks.
+
+        Builds the initial prompt once, then appends response tokens and
+        observation chunks to a running list — no re-rendering required.
 
         Flow per turn:
-        1. renderer.build_generation_prompt(messages) → ModelInput(chunks)
-        2. client.sample(chunks) → response tokens + logprobs
-        3. renderer.parse_response(tokens) → assistant Message
-        4. env.step(text) → observations + reward
-        5. Append assistant + observations to messages, repeat
+        1. ModelInput(running_chunks + suffix) → client.sample() → response tokens
+        2. Append suffix + response + <|im_end|> to running_chunks
+        3. renderer.parse_response(tokens) → text → env.step() → observations
+        4. renderer.render_message(obs) → chunks → append to running_chunks
         """
         # Init environment
         env_extras = dict(env_extras)
@@ -131,14 +140,31 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
         messages_raw, _ = await self._run_in_executor_if_available(env.init, copy.deepcopy(prompt))
         messages: List[Message] = self._convert_conversation(messages_raw)
 
-        # Build initial prompt and measure its length
+        # Build initial prompt ONCE and split off the generation suffix.
+        # The suffix (e.g. \n<|im_start|>assistant\n) is always the last chunk
+        # because Qwen3 has no BOS tokens and we don't use prefill.
         model_input = self.renderer.build_generation_prompt(messages)
         initial_prompt_tokens = _flatten_text_tokens(model_input)
-        prompt_token_count = len(initial_prompt_tokens)
+
+        all_initial_chunks = list(model_input.chunks)
+        suffix_chunk = all_initial_chunks[-1]
+        assert isinstance(suffix_chunk, EncodedTextChunk), (
+            f"Expected suffix to be EncodedTextChunk, got {type(suffix_chunk)}"
+        )
+        suffix_tokens = list(suffix_chunk.tokens)
+
+        # running_chunks holds the conversation WITHOUT the suffix.
+        # Before each sample() call we append the suffix temporarily.
+        running_chunks: List = list(all_initial_chunks[:-1])
+        running_token_count = _count_chunk_tokens(running_chunks)
+
+        # Stop token: vLLM excludes this from response token_ids, so we
+        # must append it explicitly to running_chunks after each response.
+        stop_sequences = self.renderer.get_stop_sequences()
+        end_message_token: int = stop_sequences[0]
 
         # Build sampling params for the sample() call
         sample_params = self._build_sample_params(sampling_params, max_tokens)
-        stop_sequences = self.renderer.get_stop_sequences()
         if stop_sequences:
             sample_params["stop_token_ids"] = stop_sequences
 
@@ -153,12 +179,12 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
         done = False
 
         while not done:
-            # Re-render the full conversation each turn
-            model_input = self.renderer.build_generation_prompt(messages)
-            current_token_count = _count_text_tokens(model_input)
-
-            if current_token_count > max_input_length:
+            # Length check: running tokens + suffix tokens
+            if running_token_count + len(suffix_tokens) > max_input_length:
                 break
+
+            # Build model input = running_chunks + suffix
+            model_input = ModelInput(chunks=running_chunks + [suffix_chunk])
 
             # Sample from the model
             sample_response = await self.client.sample({
@@ -185,7 +211,7 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
             done = env_step_output["done"]
             new_obs = env_step_output["observations"]
 
-            # Track response tokens
+            # Track response tokens in all_response_ids (loss_mask=1)
             response_end_idx = len(all_response_ids) + len(response_tokens) - 1
             all_response_ids.extend(response_tokens)
             loss_mask.extend([1] * len(response_tokens))
@@ -195,26 +221,50 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
                 else:
                     rollout_logprobs.extend([0.0] * len(response_tokens))
 
-            # Update messages with assistant response + observations
+            # Append to running_chunks:
+            # - suffix becomes the assistant header in conversation history
+            # - response tokens (the model's actual output)
+            # - <|im_end|> token (excluded by vLLM from response, must add explicitly)
+            running_chunks.append(EncodedTextChunk(tokens=suffix_tokens))
+            running_chunks.append(EncodedTextChunk(tokens=response_tokens))
+            running_chunks.append(EncodedTextChunk(tokens=[end_message_token]))
+            running_token_count += len(suffix_tokens) + len(response_tokens) + 1
+
+            # Keep messages list updated (needed for final training model_input)
             messages.append(assistant_message)
             obs_messages = self._convert_conversation(new_obs)
             messages.extend(obs_messages)
 
-            # Compute observation token count by re-rendering
+            # Render and append observation chunks
             if not done and obs_messages:
-                new_model_input = self.renderer.build_generation_prompt(messages)
-                new_token_count = _count_text_tokens(new_model_input)
-                # obs tokens = new total - old total - response tokens
-                # (old total includes the generation suffix, new total also includes it,
-                #  so the suffix cancels out)
-                obs_token_count = new_token_count - current_token_count - len(response_tokens)
+                obs_token_count = 0
+                for obs_msg in obs_messages:
+                    ctx = RenderContext(idx=1, is_last=False)
+                    rendered_obs = self.renderer.render_message(obs_msg, ctx)
+                    if rendered_obs.header:
+                        running_chunks.append(rendered_obs.header)
+                        obs_token_count += len(rendered_obs.header.tokens)
+                    for chunk in rendered_obs.output:
+                        if chunk:
+                            running_chunks.append(chunk)
+                            if isinstance(chunk, EncodedTextChunk):
+                                obs_token_count += len(chunk.tokens)
+                            elif isinstance(chunk, ImageChunk) and chunk.expected_tokens is not None:
+                                obs_token_count += chunk.expected_tokens
 
-                if obs_token_count > 0:
-                    # Observation tokens get loss_mask=0 and dummy logprobs
-                    all_response_ids.extend([0] * obs_token_count)
-                    loss_mask.extend([0] * obs_token_count)
-                    if rollout_logprobs is not None:
-                        rollout_logprobs.extend([0.0] * obs_token_count)
+                running_token_count += obs_token_count
+
+                # Observation token accounting for all_response_ids:
+                # Includes suffix (assistant header) + end_token + observation tokens.
+                # The suffix is counted because it sits between the response tokens and
+                # the observations in the actual sequence (it becomes the assistant header
+                # in conversation history). This matches the re-render approach where
+                # obs_count = new_total - old_total - response_len.
+                total_obs_token_count = len(suffix_tokens) + 1 + obs_token_count
+                all_response_ids.extend([0] * total_obs_token_count)
+                loss_mask.extend([0] * total_obs_token_count)
+                if rollout_logprobs is not None:
+                    rollout_logprobs.extend([0.0] * total_obs_token_count)
 
             per_step_rewards.append((step_reward, response_end_idx))
 
@@ -328,11 +378,24 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
     def _convert_conversation(messages_raw: List[Dict[str, Any]]) -> List[Message]:
         """Convert ConversationType dicts to renderer Message objects.
 
-        ConversationType messages are already compatible with the Message TypedDict —
-        they have 'role' and 'content' keys. Content may be a string or a list of
-        content parts (text, image, etc).
+        Normalizes OpenAI-format image_url parts to renderer ImagePart format.
+        VisGym returns {"type": "image_url", "image_url": {"url": "data:..."}}
+        but the renderer expects {"type": "image", "image": <str>}.
         """
-        return [Message(role=m["role"], content=m["content"]) for m in messages_raw]
+        result: List[Message] = []
+        for m in messages_raw:
+            content = m["content"]
+            if isinstance(content, list):
+                normalized_parts = []
+                for part in content:
+                    if part.get("type") == "image_url":
+                        url = part["image_url"]["url"]
+                        normalized_parts.append({"type": "image", "image": url})
+                    else:
+                        normalized_parts.append(part)
+                content = normalized_parts
+            result.append(Message(role=m["role"], content=content))
+        return result
 
     def _build_sample_params(
         self, override_params: Optional[Dict[str, Any]], max_tokens: int
