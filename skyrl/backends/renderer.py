@@ -50,6 +50,10 @@ class VLLMRenderer:
 
         return asyncio.run(_render_all())
 
+    async def render_async(self, model_inputs: list[ModelInput]) -> list[RenderedModelInput]:
+        """Async variant of __call__ for use within a running event loop."""
+        return await asyncio.gather(*[self._render_single(mi) for mi in model_inputs])
+
     # -- internal -------------------------------------------------------------
 
     async def _render_single(self, model_input: ModelInput) -> RenderedModelInput:

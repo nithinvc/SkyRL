@@ -288,6 +288,7 @@ class BasePPOExp:
         inference_engine_client,
         generator: GeneratorInterface,
         colocate_pg,
+        vllm_renderer=None,
     ):
         """Initializes the trainer.
 
@@ -303,6 +304,7 @@ class BasePPOExp:
             inference_engine_client=inference_engine_client,
             generator=generator,
             colocate_pg=colocate_pg,
+            vllm_renderer=vllm_renderer,
         )
 
     def get_tracker(self):
@@ -497,6 +499,30 @@ class BasePPOExp:
 
         generator: GeneratorInterface = self.get_generator(self.cfg, self.tokenizer, inference_engine_client)
 
+        # Create VLLMRenderer for VLM training (renders images via vLLM for
+        # train/inference consistency). Only when using the new inference path
+        # and the client is a RemoteInferenceClient.
+        vllm_renderer = None
+        if _SKYRL_USE_NEW_INFERENCE:
+            from skyrl.backends.skyrl_train.inference_servers.remote_inference_client import (
+                RemoteInferenceClient,
+            )
+
+            if isinstance(inference_engine_client, RemoteInferenceClient):
+                from transformers import AutoConfig
+
+                model_path = self.cfg.trainer.policy.model.path
+                model_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+                is_vlm = hasattr(model_config, "vision_config") and model_config.vision_config is not None
+                if is_vlm:
+                    from skyrl.backends.renderer import VLLMRenderer
+
+                    vllm_renderer = VLLMRenderer(
+                        client=inference_engine_client,
+                        model_name=model_path,
+                    )
+                    logger.info("VLLMRenderer created for VLM training")
+
         trainer = self.get_trainer(
             cfg=self.cfg,
             tracker=tracker,
@@ -506,6 +532,7 @@ class BasePPOExp:
             inference_engine_client=inference_engine_client,
             generator=generator,
             colocate_pg=self.colocate_pg,
+            vllm_renderer=vllm_renderer,
         )
 
         # Build the models

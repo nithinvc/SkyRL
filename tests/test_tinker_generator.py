@@ -158,11 +158,12 @@ class TestSingleTurn:
                 prompt, "test_env", {}, max_tokens=64, max_input_length=512
             ))
 
-        assert output.response_ids == [10, 11, 12]
+        # Response tokens are followed by suffix + end_token placeholders (loss_mask=0)
+        assert output.response_ids[:3] == [10, 11, 12]
         assert output.stop_reason == "stop"
-        assert len(output.loss_mask) == 3
-        assert all(m == 1 for m in output.loss_mask)  # all generated tokens
-        assert output.rollout_logprobs == [-0.1, -0.2, -0.3]
+        assert output.loss_mask[:3] == [1, 1, 1]  # generated tokens
+        assert all(m == 0 for m in output.loss_mask[3:])  # suffix + end_token
+        assert output.rollout_logprobs[:3] == [-0.1, -0.2, -0.3]
         assert len(output.prompt_ids) > 0  # should have tokenized prompt
 
     def test_single_turn_no_logprobs(self, renderer, skyrl_gym_cfg):
@@ -203,8 +204,10 @@ class TestSingleTurn:
             ))
 
         assert isinstance(output.reward, list)
-        assert output.reward[-1] == 5.0
-        assert output.reward[:-1] == [0.0] * (len(output.reward) - 1)
+        # Reward is placed at the last response token (index 2), not at the
+        # end of response_ids (which now includes suffix + end_token placeholders)
+        assert output.reward[2] == 5.0
+        assert sum(output.reward) == 5.0  # only one non-zero reward
 
 
 # ---------------------------------------------------------------------------
@@ -353,9 +356,9 @@ class TestBatchGeneration:
         assert len(output["loss_masks"]) == 3
         assert len(output["stop_reasons"]) == 3
 
-        # Each response should have the mock tokens
+        # Each response should start with the mock tokens
         for resp in output["response_ids"]:
-            assert resp == [10, 11]
+            assert resp[:2] == [10, 11]
 
     def test_generator_output_has_required_keys(self, renderer, generator_cfg, skyrl_gym_cfg):
         """GeneratorOutput has all required TypedDict keys."""
@@ -437,3 +440,212 @@ class TestStopReasonHandling:
             assert all(r == 0.0 for r in reward)
         else:
             assert reward == 0.0
+
+
+# ---------------------------------------------------------------------------
+# VLM piping tests (Gaps 1, 2, 3)
+# ---------------------------------------------------------------------------
+
+
+class TestVLMPiping:
+    """Tests for multi-modal data flowing from generator through to training."""
+
+    @pytest.fixture
+    def vl_renderer(self):
+        from skyrl.train.renderers.qwen3 import Qwen3VLRenderer
+        from skyrl.train.renderers.image_utils import get_image_processor
+        from transformers import AutoTokenizer
+
+        tok = AutoTokenizer.from_pretrained("Qwen/Qwen3-VL-2B-Instruct", use_fast=True)
+        proc = get_image_processor("Qwen/Qwen3-VL-2B-Instruct")
+        return Qwen3VLRenderer(tok, proc, strip_thinking_from_history=False)
+
+    def _image_prompt(self):
+        img = Image.new("RGB", (8, 8), color=(255, 0, 0))
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": img},
+                    {"type": "text", "text": "What is this?"},
+                ],
+            }
+        ]
+
+    # -- Gap 1: model_inputs in GeneratorOutput --------------------------------
+
+    def test_generate_output_has_model_inputs(self, vl_renderer, generator_cfg, skyrl_gym_cfg):
+        """GeneratorOutput includes model_inputs with ImageChunks for VLM prompts."""
+        client = _make_mock_client([
+            {"tokens": [10, 11], "logprobs": [-0.1, -0.2], "stop_reason": "stop"}
+        ])
+        env = _make_mock_env([{"observations": [], "reward": 1.0, "done": True}])
+
+        generator = SkyRLGymTinkerGenerator(generator_cfg, skyrl_gym_cfg, client, vl_renderer)
+
+        input_batch: GeneratorInput = {
+            "prompts": [self._image_prompt()],
+            "env_classes": ["visgym"],
+            "env_extras": [{}],
+        }
+
+        with patch("skyrl_gym.make", return_value=env):
+            output: GeneratorOutput = asyncio.run(generator.generate(input_batch, disable_tqdm=True))
+
+        assert "model_inputs" in output
+        assert output["model_inputs"] is not None
+        assert len(output["model_inputs"]) == 1
+
+        mi = output["model_inputs"][0]
+        assert isinstance(mi, ModelInput)
+        image_chunks = [c for c in mi.chunks if isinstance(c, ImageChunk)]
+        assert len(image_chunks) >= 1
+
+    def test_text_only_generate_has_model_inputs_none(self, renderer, generator_cfg, skyrl_gym_cfg):
+        """Text-only GeneratorOutput still has model_inputs (no ImageChunks)."""
+        client = _make_mock_client()
+        env = _make_mock_env()
+
+        generator = SkyRLGymTinkerGenerator(generator_cfg, skyrl_gym_cfg, client, renderer)
+
+        input_batch: GeneratorInput = {
+            "prompts": [[{"role": "user", "content": "Hi"}]],
+            "env_classes": ["gsm8k"],
+            "env_extras": [{}],
+        }
+
+        with patch("skyrl_gym.make", return_value=env):
+            output = asyncio.run(generator.generate(input_batch, disable_tqdm=True))
+
+        assert "model_inputs" in output
+        # Text-only: model_input exists but has no ImageChunks
+        mi = output["model_inputs"][0]
+        image_chunks = [c for c in mi.chunks if isinstance(c, ImageChunk)]
+        assert len(image_chunks) == 0
+
+    # -- Gap 2 generator: initial prompt tokens include image expected_tokens ---
+
+    def test_prompt_ids_include_image_placeholder_count(self, vl_renderer, generator_cfg, skyrl_gym_cfg):
+        """prompt_ids length accounts for image expected_tokens, not just text."""
+        client = _make_mock_client([
+            {"tokens": [10, 11], "logprobs": [-0.1, -0.2], "stop_reason": "stop"}
+        ])
+        env = _make_mock_env([{"observations": [], "reward": 1.0, "done": True}])
+
+        generator = SkyRLGymTinkerGenerator(generator_cfg, skyrl_gym_cfg, client, vl_renderer)
+
+        with patch("skyrl_gym.make", return_value=env):
+            output = asyncio.run(generator.agent_loop(
+                self._image_prompt(), "test_env", {}, max_tokens=64, max_input_length=2048
+            ))
+
+        # prompt_ids should contain placeholder 0s for images
+        zero_count = sum(1 for t in output.prompt_ids if t == 0)
+        assert zero_count > 0
+
+        # The number of 0s should match the image expected_tokens
+        image_chunks = [c for c in output.model_input.chunks if isinstance(c, ImageChunk)]
+        expected_image_tokens = sum(c.expected_tokens for c in image_chunks if c.expected_tokens)
+        assert zero_count >= expected_image_tokens  # >= because initial prompt images contribute
+
+    # -- Gap 2 generator: model_input from running_chunks (no suffix) ----------
+
+    def test_model_input_has_no_suffix(self, vl_renderer, generator_cfg, skyrl_gym_cfg):
+        """model_input should NOT end with a generation suffix chunk."""
+        client = _make_mock_client([
+            {"tokens": [10, 11], "logprobs": [-0.1, -0.2], "stop_reason": "stop"}
+        ])
+        env = _make_mock_env([{"observations": [], "reward": 1.0, "done": True}])
+
+        generator = SkyRLGymTinkerGenerator(generator_cfg, skyrl_gym_cfg, client, vl_renderer)
+
+        with patch("skyrl_gym.make", return_value=env):
+            output = asyncio.run(generator.agent_loop(
+                self._image_prompt(), "test_env", {}, max_tokens=64, max_input_length=2048
+            ))
+
+        # The last chunk should be the end-of-message token or final response chunk,
+        # NOT the assistant generation suffix (\n<|im_start|>assistant\n)
+        last_chunk = output.model_input.chunks[-1]
+        assert isinstance(last_chunk, EncodedTextChunk)
+        # Suffix would contain "assistant" header tokens. The last chunk of
+        # running_chunks after a single-turn should be the <|im_end|> token chunk.
+        # With a single response, running_chunks ends with: response_tokens, end_token.
+        # So the last chunk should be very short (just the end_message token).
+        assert len(last_chunk.tokens) <= 3  # end_message token chunk is 1 token
+
+    # -- Gap 2 generator: no trimming of trailing observations -----------------
+
+    def test_multi_turn_keeps_trailing_observations(self, vl_renderer, generator_cfg, skyrl_gym_cfg):
+        """After removing trimming, trailing obs tokens stay in response_ids."""
+        client = _make_mock_client([
+            {"tokens": [10, 11], "logprobs": [-0.1, -0.2], "stop_reason": "stop"},
+            {"tokens": [20, 21, 22], "logprobs": [-0.3, -0.4, -0.5], "stop_reason": "stop"},
+        ])
+        # Turn 1 returns observation, turn 2 is done — but done still may have
+        # trailing observation tokens from turn 1.
+        env = _make_mock_env([
+            {"observations": [{"role": "user", "content": "Continue"}], "reward": 0.5, "done": False},
+            {"observations": [], "reward": 1.0, "done": True},
+        ])
+
+        generator = SkyRLGymTinkerGenerator(generator_cfg, skyrl_gym_cfg, client, vl_renderer)
+
+        with patch("skyrl_gym.make", return_value=env):
+            output = asyncio.run(generator.agent_loop(
+                self._image_prompt(), "test_env", {}, max_tokens=64, max_input_length=2048
+            ))
+
+        # response_ids should include observation tokens (loss_mask=0) between turns
+        obs_mask_count = sum(1 for m in output.loss_mask if m == 0)
+        gen_mask_count = sum(1 for m in output.loss_mask if m == 1)
+        assert gen_mask_count == 5  # 2 + 3 response tokens
+        assert obs_mask_count > 0  # observation tokens present
+
+    # -- Gap 2 generator: token accounting consistency -------------------------
+
+    def test_prompt_plus_response_matches_model_input_tokens(self, vl_renderer, generator_cfg, skyrl_gym_cfg):
+        """len(prompt_ids) + len(response_ids) should equal total tokens in model_input."""
+        from skyrl.train.generators.skyrl_gym_tinker_generator import _count_chunk_tokens
+
+        client = _make_mock_client([
+            {"tokens": [10, 11], "logprobs": [-0.1, -0.2], "stop_reason": "stop"},
+            {"tokens": [20, 21], "logprobs": [-0.3, -0.4], "stop_reason": "stop"},
+        ])
+        env = _make_mock_env([
+            {"observations": [{"role": "user", "content": "Continue"}], "reward": 0.0, "done": False},
+            {"observations": [], "reward": 1.0, "done": True},
+        ])
+
+        generator = SkyRLGymTinkerGenerator(generator_cfg, skyrl_gym_cfg, client, vl_renderer)
+
+        with patch("skyrl_gym.make", return_value=env):
+            output = asyncio.run(generator.agent_loop(
+                self._image_prompt(), "test_env", {}, max_tokens=64, max_input_length=2048
+            ))
+
+        total_from_output = len(output.prompt_ids) + len(output.response_ids)
+        total_from_chunks = _count_chunk_tokens(output.model_input.chunks)
+        assert total_from_output == total_from_chunks
+
+    # -- Gap 2 generator: loss_mask length matches response_ids ----------------
+
+    def test_loss_mask_length_matches_response_ids(self, vl_renderer, generator_cfg, skyrl_gym_cfg):
+        """loss_mask should have the same length as response_ids."""
+        client = _make_mock_client([
+            {"tokens": [10, 11], "logprobs": [-0.1, -0.2], "stop_reason": "stop"},
+            {"tokens": [20, 21], "logprobs": [-0.3, -0.4], "stop_reason": "stop"},
+        ])
+        env = _make_mock_env([
+            {"observations": [{"role": "user", "content": "Go on"}], "reward": 0.0, "done": False},
+            {"observations": [], "reward": 1.0, "done": True},
+        ])
+
+        generator = SkyRLGymTinkerGenerator(generator_cfg, skyrl_gym_cfg, client, vl_renderer)
+
+        with patch("skyrl_gym.make", return_value=env):
+            output = asyncio.run(generator.agent_loop(
+                self._image_prompt(), "test_env", {}, max_tokens=64, max_input_length=2048
+            ))
+
+        assert len(output.loss_mask) == len(output.response_ids)

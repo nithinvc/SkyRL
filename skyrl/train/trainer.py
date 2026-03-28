@@ -90,6 +90,7 @@ class RayPPOTrainer:
         generator: GeneratorInterface,
         colocate_pg: Optional[ResolvedPlacementGroup] = None,
         eval_dataset: Optional[PromptDataset] = None,
+        vllm_renderer=None,
     ):
         self.cfg = cfg
         self.colocate_all = cfg.trainer.placement.colocate_all
@@ -99,6 +100,7 @@ class RayPPOTrainer:
         self.eval_dataset = eval_dataset
         self.inference_engine_client = inference_engine_client
         self.generator = generator
+        self.vllm_renderer = vllm_renderer
         self.train_dataloader = None
         self.total_training_steps = None
         self._build_train_dataloader_and_compute_training_steps()
@@ -259,7 +261,13 @@ class RayPPOTrainer:
 
                     # 3. Convert GeneratorOutput to TrainingInputBatch
                     with Timer("convert_to_training_input", self.all_timings):
-                        training_input: TrainingInputBatch = self.convert_to_training_input(generator_output, uids)
+                        model_inputs = generator_output.get("model_inputs")
+                        vision_data = None
+                        if model_inputs and self.vllm_renderer:
+                            vision_data = await self.render_vision_inputs(model_inputs)
+                        training_input: TrainingInputBatch = self.convert_to_training_input(
+                            generator_output, uids, vision_data=vision_data,
+                        )
 
                     # 4. Inference and calculate values, log probs, rewards, kl divergence
                     with Timer("fwd_logprobs_values_reward", self.all_timings):
@@ -601,8 +609,70 @@ class RayPPOTrainer:
             self.cfg.generator.inference_engine,
         )
 
-    def convert_to_training_input(self, generator_output: GeneratorOutput, uids: List[str]) -> TrainingInputBatch:
-        """Converts lists to a padded batch of tensors for training"""
+    async def render_vision_inputs(self, model_inputs):
+        """Render ModelInputs via vLLM to get pixel_values and image_grid_thw.
+
+        Returns:
+            Tuple of (rendered_prompt_ids, pixel_values TensorList, image_grid_thw TensorList)
+        """
+        from skyrl.backends.skyrl_train.training_batch import TensorList
+
+        rendered = await self.vllm_renderer.render_async(model_inputs)
+        rendered_prompt_ids = [r.prompt_ids for r in rendered]
+
+        # Decode multi-modal kwargs_data into pixel_values / image_grid_thw
+        # (follows the pattern in skyrl_train_backend.py:_to_training_batch)
+        has_vision = any(r.multi_modal_kwargs for r in rendered)
+        pixel_values = None
+        image_grid_thw = None
+
+        if has_vision:
+            from vllm.entrypoints.serve.disagg.mm_serde import decode_mm_kwargs_item
+
+            pixel_values_list: list = []
+            image_grid_thw_list: list = []
+            for r in rendered:
+                if r.multi_modal_kwargs and "image" in r.multi_modal_kwargs:
+                    pv_parts: list = []
+                    thw_parts: list = []
+                    for b64_str in r.multi_modal_kwargs["image"]:
+                        item = decode_mm_kwargs_item(b64_str)
+                        data = item.get_data()
+                        if "pixel_values" in data:
+                            pv = data["pixel_values"]
+                            if isinstance(pv, torch.Tensor):
+                                pv_parts.append(pv)
+                        if "image_grid_thw" in data:
+                            thw = data["image_grid_thw"]
+                            if isinstance(thw, torch.Tensor):
+                                thw_parts.append(thw)
+                    pixel_values_list.append(torch.cat(pv_parts, dim=0) if pv_parts else torch.empty(0))
+                    image_grid_thw_list.append(
+                        torch.cat(thw_parts, dim=0) if thw_parts else torch.empty(0, 3, dtype=torch.long)
+                    )
+                else:
+                    dim = (
+                        pixel_values_list[0].shape[-1]
+                        if pixel_values_list and pixel_values_list[0].numel() > 0
+                        else 0
+                    )
+                    pixel_values_list.append(torch.empty(0, dim))
+                    image_grid_thw_list.append(torch.empty(0, 3, dtype=torch.long))
+            pixel_values = TensorList(pixel_values_list)
+            image_grid_thw = TensorList(image_grid_thw_list)
+
+        return rendered_prompt_ids, pixel_values, image_grid_thw
+
+    def convert_to_training_input(
+        self, generator_output: GeneratorOutput, uids: List[str], vision_data=None,
+    ) -> TrainingInputBatch:
+        """Converts lists to a padded batch of tensors for training.
+
+        Args:
+            vision_data: Optional tuple of (rendered_prompt_ids, pixel_values, image_grid_thw)
+                from render_vision_inputs(). When provided, rendered_prompt_ids are used as
+                sequences (with real image placeholder token IDs) instead of text-only tokens.
+        """
         prompt_ids: List[List[int]] = generator_output["prompt_token_ids"]
         response_ids: List[List[int]] = generator_output["response_ids"]
         rewards: List[List[float]] = generator_output["rewards"]
@@ -612,6 +682,20 @@ class RayPPOTrainer:
         rollout_expert_indices: Optional[List[List[List[List[int]]]]] = generator_output.get(
             "rollout_expert_indices", None
         )
+
+        # When vision data is available, use rendered prompt_ids (which contain
+        # real image placeholder token IDs) instead of text-only tokens with 0s.
+        # Split the rendered full sequence into prompt/response portions so the
+        # existing padding and mask logic works unchanged.
+        if vision_data is not None:
+            rendered_prompt_ids, pixel_values, image_grid_thw = vision_data
+            prompt_ids = []
+            response_ids_replaced = []
+            for rendered, resp in zip(rendered_prompt_ids, response_ids):
+                resp_len = len(resp)
+                prompt_ids.append(rendered[:-resp_len] if resp_len > 0 else rendered)
+                response_ids_replaced.append(rendered[-resp_len:] if resp_len > 0 else [])
+            response_ids = response_ids_replaced
 
         (
             sequences_tensor,
@@ -642,22 +726,24 @@ class RayPPOTrainer:
             ), "expected non-null rollout logprobs tensor when off_policy_correction is enabled"
             assert rollout_logprobs_tensor.shape == loss_masks_tensor.shape, "Logprobs should look like responses"
 
-        training_input = TrainingInputBatch(
-            {
-                "sequences": sequences_tensor,  # Full trajectories (padded and concatenated prompts and responses)
-                "attention_mask": attention_masks_tensor,
-                "response_mask": response_masks_tensor,
-                "rewards": rewards_tensor,
-                "loss_mask": loss_masks_tensor,
-                "rollout_logprobs": rollout_logprobs_tensor,
-                "rollout_expert_indices": rollout_expert_indices_tensor,
-                "is_last_step": (
-                    torch.tensor(generator_output["is_last_step"], dtype=torch.bool)
-                    if generator_output.get("is_last_step", None) is not None
-                    else None
-                ),
-            },
-        )
+        batch_dict = {
+            "sequences": sequences_tensor,  # Full trajectories (padded and concatenated prompts and responses)
+            "attention_mask": attention_masks_tensor,
+            "response_mask": response_masks_tensor,
+            "rewards": rewards_tensor,
+            "loss_mask": loss_masks_tensor,
+            "rollout_logprobs": rollout_logprobs_tensor,
+            "rollout_expert_indices": rollout_expert_indices_tensor,
+            "is_last_step": (
+                torch.tensor(generator_output["is_last_step"], dtype=torch.bool)
+                if generator_output.get("is_last_step", None) is not None
+                else None
+            ),
+        }
+        if vision_data is not None and pixel_values is not None:
+            batch_dict["pixel_values"] = pixel_values
+            batch_dict["image_grid_thw"] = image_grid_thw
+        training_input = TrainingInputBatch(batch_dict)
         training_input.metadata = {"uids": uids}
         # padded response length
         training_input.metadata["response_length"] = response_masks_tensor.shape[1]
@@ -948,6 +1034,10 @@ class RayPPOTrainer:
         fwd_keys = ["sequences", "attention_mask"]
         if training_input.get("rollout_expert_indices") is not None:
             fwd_keys.append("rollout_expert_indices")
+        if training_input.get("pixel_values") is not None:
+            fwd_keys.append("pixel_values")
+        if training_input.get("image_grid_thw") is not None:
+            fwd_keys.append("image_grid_thw")
         data_fwd_pass = training_input.select(keys=fwd_keys, metadata_keys=["response_length"])
 
         values = None

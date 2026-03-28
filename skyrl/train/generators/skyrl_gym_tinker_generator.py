@@ -70,6 +70,17 @@ def _flatten_text_tokens(model_input: ModelInput) -> List[int]:
     return tokens
 
 
+def _flatten_all_tokens(chunks) -> List[int]:
+    """Flatten chunks to token IDs, using placeholder 0s for image expected_tokens."""
+    tokens: List[int] = []
+    for chunk in chunks:
+        if isinstance(chunk, EncodedTextChunk):
+            tokens.extend(chunk.tokens)
+        elif isinstance(chunk, ImageChunk) and chunk.expected_tokens is not None:
+            tokens.extend([0] * chunk.expected_tokens)
+    return tokens
+
+
 class SkyRLGymTinkerGenerator(GeneratorInterface):
     """Multi-modal multi-turn generator using Tinker chunks + RemoteInferenceClient.sample().
 
@@ -144,7 +155,7 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
         # The suffix (e.g. \n<|im_start|>assistant\n) is always the last chunk
         # because Qwen3 has no BOS tokens and we don't use prefill.
         model_input = self.renderer.build_generation_prompt(messages)
-        initial_prompt_tokens = _flatten_text_tokens(model_input)
+        initial_prompt_tokens = _flatten_all_tokens(model_input.chunks[:-1])
 
         all_initial_chunks = list(model_input.chunks)
         suffix_chunk = all_initial_chunks[-1]
@@ -230,6 +241,15 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
             running_chunks.append(EncodedTextChunk(tokens=[end_message_token]))
             running_token_count += len(suffix_tokens) + len(response_tokens) + 1
 
+            # Always account for suffix + end_token in response_ids (loss_mask=0).
+            # These are always in running_chunks and must be tracked to keep
+            # prompt_ids + response_ids aligned with the model_input chunk count.
+            suffix_end_count = len(suffix_tokens) + 1
+            all_response_ids.extend([0] * suffix_end_count)
+            loss_mask.extend([0] * suffix_end_count)
+            if rollout_logprobs is not None:
+                rollout_logprobs.extend([0.0] * suffix_end_count)
+
             # Keep messages list updated (needed for final training model_input)
             messages.append(assistant_message)
             obs_messages = self._convert_conversation(new_obs)
@@ -254,17 +274,11 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
 
                 running_token_count += obs_token_count
 
-                # Observation token accounting for all_response_ids:
-                # Includes suffix (assistant header) + end_token + observation tokens.
-                # The suffix is counted because it sits between the response tokens and
-                # the observations in the actual sequence (it becomes the assistant header
-                # in conversation history). This matches the re-render approach where
-                # obs_count = new_total - old_total - response_len.
-                total_obs_token_count = len(suffix_tokens) + 1 + obs_token_count
-                all_response_ids.extend([0] * total_obs_token_count)
-                loss_mask.extend([0] * total_obs_token_count)
+                # Observation token accounting for all_response_ids.
+                all_response_ids.extend([0] * obs_token_count)
+                loss_mask.extend([0] * obs_token_count)
                 if rollout_logprobs is not None:
-                    rollout_logprobs.extend([0.0] * total_obs_token_count)
+                    rollout_logprobs.extend([0.0] * obs_token_count)
 
             per_step_rewards.append((step_reward, response_end_idx))
 
@@ -272,21 +286,13 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
         env_metrics = env.get_metrics()
         await self._run_in_executor_if_available(env.close)
 
-        # Trim trailing observation tokens from response_ids / loss_mask
-        # (same as existing generator: remove tokens after last response_end_idx)
-        if per_step_rewards:
-            last_response_end = per_step_rewards[-1][1]
-            if last_response_end is not None and last_response_end + 1 < len(all_response_ids):
-                all_response_ids = all_response_ids[: last_response_end + 1]
-                loss_mask = loss_mask[: last_response_end + 1]
-                if rollout_logprobs is not None:
-                    rollout_logprobs = rollout_logprobs[: last_response_end + 1]
-
         # Build per-token rewards
         reward_out = self._build_per_token_rewards(per_step_rewards, all_response_ids)
 
-        # Final model input (with images) for training rendering
-        final_model_input = self.renderer.build_generation_prompt(messages)
+        # Final model input (with images) for training rendering.
+        # Use running_chunks directly — they already contain ImageChunks and
+        # exclude the generation suffix, matching the actual conversation.
+        final_model_input = ModelInput(chunks=list(running_chunks))
 
         return TrajectoryOutput(
             response_ids=all_response_ids,
@@ -342,6 +348,7 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
         loss_masks = [output.loss_mask for output in all_outputs]
         prompt_token_ids = [output.prompt_ids for output in all_outputs]
         env_metrics = [output.env_metrics for output in all_outputs]
+        model_inputs = [output.model_input for output in all_outputs]
 
         get_logprobs = self.generator_cfg.sampling_params.logprobs is not None
         if get_logprobs:
@@ -368,6 +375,7 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
             "trajectory_ids": None,
             "rollout_expert_indices": None,
             "is_last_step": None,
+            "model_inputs": model_inputs,
         }
 
         return generator_output
