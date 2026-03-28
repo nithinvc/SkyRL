@@ -691,10 +691,22 @@ class RayPPOTrainer:
             rendered_prompt_ids, pixel_values, image_grid_thw = vision_data
             prompt_ids = []
             response_ids_replaced = []
-            for rendered, resp in zip(rendered_prompt_ids, response_ids):
+            for rendered, resp, lm in zip(rendered_prompt_ids, response_ids, loss_masks):
                 resp_len = len(resp)
                 prompt_ids.append(rendered[:-resp_len] if resp_len > 0 else rendered)
-                response_ids_replaced.append(rendered[-resp_len:] if resp_len > 0 else [])
+                replaced = rendered[-resp_len:] if resp_len > 0 else []
+                response_ids_replaced.append(replaced)
+
+                # Verify split alignment: generated tokens (loss_mask==1) must match
+                # between the VLLMRenderer output and the generator output. A mismatch
+                # means image placeholder token counts diverged, corrupting the split.
+                for i, (rtok, gtok, m) in enumerate(zip(replaced, resp, lm)):
+                    if m == 1 and rtok != gtok:
+                        raise ValueError(
+                            f"Vision token misalignment at response position {i}: "
+                            f"rendered={rtok}, generator={gtok}. "
+                            f"Image placeholder count mismatch between generator and VLLMRenderer."
+                        )
             response_ids = response_ids_replaced
 
         (
@@ -984,20 +996,26 @@ class RayPPOTrainer:
         training_input.metadata["pad_size"] = pad_size
         if pad_size == 0:
             return training_input
+        from skyrl.backends.skyrl_train.training_batch import TensorList
+
         for key, tensor in training_input.items():
             if tensor is not None:
-                additional_dims = tuple(tensor.shape[1:]) if len(tensor.shape) > 1 else ()
-
-                if key == "is_last_step":
-                    padding_tensor = torch.ones(pad_size, *additional_dims, dtype=tensor.dtype, device=tensor.device)
-                elif key == "loss_mask":
-                    # ensures that padding tensors don't count towards the loss
-                    padding_tensor = torch.zeros(pad_size, *additional_dims, dtype=tensor.dtype, device=tensor.device)
+                if isinstance(tensor, TensorList):
+                    pad_tensors = [tensor[i % len(tensor)].clone() for i in range(pad_size)]
+                    new_tensors[key] = TensorList.cat([tensor, TensorList(pad_tensors)])
                 else:
-                    # ensures all padding tensors are in a valid format by cloning `pad_size` from the original input
-                    # `pad_size` is guaranteed to be smaller than batch_size
-                    padding_tensor = tensor[:pad_size].clone()
-                new_tensors[key] = torch.cat([tensor, padding_tensor], dim=0)
+                    additional_dims = tuple(tensor.shape[1:]) if len(tensor.shape) > 1 else ()
+
+                    if key == "is_last_step":
+                        padding_tensor = torch.ones(pad_size, *additional_dims, dtype=tensor.dtype, device=tensor.device)
+                    elif key == "loss_mask":
+                        # ensures that padding tensors don't count towards the loss
+                        padding_tensor = torch.zeros(pad_size, *additional_dims, dtype=tensor.dtype, device=tensor.device)
+                    else:
+                        # ensures all padding tensors are in a valid format by cloning `pad_size` from the original input
+                        # `pad_size` is guaranteed to be smaller than batch_size
+                        padding_tensor = tensor[:pad_size].clone()
+                    new_tensors[key] = torch.cat([tensor, padding_tensor], dim=0)
 
         new_training_input = TrainingInputBatch(new_tensors)
         new_training_input.metadata = {}
