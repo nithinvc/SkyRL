@@ -648,7 +648,7 @@ class RayPPOTrainer:
                                 thw_parts.append(thw)
                     pixel_values_list.append(torch.cat(pv_parts, dim=0) if pv_parts else torch.empty(0))
                     image_grid_thw_list.append(
-                        torch.cat(thw_parts, dim=0) if thw_parts else torch.empty(0, 3, dtype=torch.long)
+                        torch.stack(thw_parts, dim=0) if thw_parts else torch.empty(0, 3, dtype=torch.long)
                     )
                 else:
                     dim = (
