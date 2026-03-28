@@ -491,16 +491,19 @@ class RemoteInferenceClient:
 
         Args:
             request_payload: Dict with {"json": <request-body>}.
-                Expected keys in json: prompt, num_samples, sampling_params, session_id.
+                Expected keys in json: prompt, num_samples, sampling_params, session_id,
+                and optionally include_prompt_logprobs (bool).
 
         Returns:
-            Dict with type="sample", sequences list, and stub prompt_logprobs fields.
+            Dict with type="sample", sequences list, and prompt_logprobs (flat list of
+            floats with prompt_length-1 entries when requested, None otherwise).
         """
         session_id, body = _extract_session_id_and_body(request_payload)
 
         prompt = body.get("prompt", {})
         num_samples = body.get("num_samples", 1)
         tinker_params = body.get("sampling_params", {})
+        include_prompt_logprobs = body.get("include_prompt_logprobs", False)
 
         # Render multi-modal prompt (text-only fast path if no images)
         chunks = prompt.get("chunks", [])
@@ -525,6 +528,9 @@ class RemoteInferenceClient:
             val = tinker_params.get(tinker_key)
             if val is not None:
                 sampling_params[vllm_key] = val
+
+        if include_prompt_logprobs:
+            sampling_params["prompt_logprobs"] = 0
 
         effective_model = self.active_lora_name if self.active_lora_name else self.model_name
 
@@ -562,10 +568,23 @@ class RemoteInferenceClient:
                 }
             )
 
+        # Extract prompt logprobs if requested.
+        # vLLM returns [None, {token_id: Logprob}, ...] — position 0 is always
+        # None (no conditioning context).  We skip it and return prompt_length-1
+        # floats, matching the Jax backend convention.
+        prompt_logprobs: Optional[List[float]] = None
+        if include_prompt_logprobs:
+            raw_prompt_logprobs = response.get("prompt_logprobs")
+            if raw_prompt_logprobs:
+                prompt_logprobs = [
+                    raw_prompt_logprobs[i][str(token_ids[i])]["logprob"]
+                    for i in range(1, len(raw_prompt_logprobs))
+                ]
+
         return {
             "type": "sample",
             "sequences": sequences,
-            "prompt_logprobs": None,
+            "prompt_logprobs": prompt_logprobs,
             "topk_prompt_logprobs": None,
         }
 
