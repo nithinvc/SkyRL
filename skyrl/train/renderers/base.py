@@ -306,7 +306,6 @@ def image_to_chunk(
         image_processor.get_number_of_image_patches(height, width, images_kwargs={}) // image_processor.merge_size**2
     )
 
-    # ImageChunk.data is Base64Bytes — pydantic expects base64-encoded input
     import base64
 
     b64_data = base64.b64encode(image_data)

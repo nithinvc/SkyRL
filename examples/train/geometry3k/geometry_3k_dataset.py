@@ -19,9 +19,12 @@ Fields: 'images' (list of PIL images), 'problem' (text with <image> placeholder)
 """
 
 import argparse
+import base64
+import io
 import os
 
 import datasets
+from PIL import Image
 
 
 QUESTION_TEMPLATE = (
@@ -35,22 +38,32 @@ QUESTION_TEMPLATE = (
 )
 
 
+def _pil_to_data_uri(img: Image.Image) -> str:
+    """Convert a PIL Image to a base64 data URI string."""
+    if img.mode in ("RGBA", "LA", "P"):
+        img = img.convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{b64}"
+
+
+def _sanitize_text(text: str) -> str:
+    """Replace invalid/overlong UTF-8 sequences that crash ujson."""
+    return text.encode("utf-8", errors="replace").decode("utf-8")
+
+
 def make_map_fn(split):
     def process_fn(example, idx):
-        # The answer field contains the ground truth answer
-        answer = example["answer"].strip()
+        answer = _sanitize_text(example["answer"].strip())
 
-        # Build the prompt with image and text content
-        # The problem field may contain <image> placeholder(s)
-        problem_text = example["problem"]
+        problem_text = _sanitize_text(example["problem"])
 
-        # Build content list with images first, then text
         content = []
 
-        # Add images - the dataset provides a list of images
         images = example["images"]
         for img in images:
-            content.append({"type": "image", "image": img})
+            content.append({"type": "image", "image": _pil_to_data_uri(img)})
 
         # Add the problem text with our question template
         content.append({"type": "text", "text": QUESTION_TEMPLATE.format(Question=problem_text)})
@@ -146,7 +159,8 @@ if __name__ == "__main__":
             if part["type"] == "text":
                 print(part["text"])
             elif part["type"] == "image":
-                print(f"  <image: {type(part['image']).__name__}>")
+                uri = part["image"]
+                print(f"  <image: data URI, {len(uri)} chars>")
     print(f"\n--- Reward Spec ---")
     print(f"  method: {sample['reward_spec']['method']}")
     print(f"  ground_truth: {sample['reward_spec']['ground_truth']}")

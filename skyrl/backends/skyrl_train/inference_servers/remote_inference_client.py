@@ -47,7 +47,6 @@ Comparison with existing code:
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import os
 from dataclasses import dataclass, field
@@ -312,7 +311,10 @@ class RemoteInferenceClient:
         content_parts: List[Dict[str, Any]] = []
         for chunk in image_chunks:
             raw_data = chunk["data"]
-            b64_data = base64.b64encode(raw_data).decode("ascii") if isinstance(raw_data, bytes) else raw_data
+            if isinstance(raw_data, bytes):
+                b64_data = raw_data.decode("ascii")
+            else:
+                b64_data = raw_data
             fmt = chunk.get("format", "jpeg")
             url = f"data:image/{fmt};base64,{b64_data}"
             content_parts.append({"type": "image_url", "image_url": {"url": url}})
