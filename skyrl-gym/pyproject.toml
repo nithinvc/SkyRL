@@ -29,7 +29,7 @@ include = ["skyrl_gym*"]
 
 [project.optional-dependencies]
 visgym = [
-    "gymnasium[envs] @ git+https://github.com/visgym/VisGym.git@main",
+    "gymnasium[envs]",
 ]
 dev = [
     "pytest",

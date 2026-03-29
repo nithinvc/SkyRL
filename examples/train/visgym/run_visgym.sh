@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
 set -x
 
 # Dev training run: VLM RL on VisGym maze_2d/easy with Qwen3-VL-2B.
@@ -23,13 +25,16 @@ uv run --isolated --extra fsdp \
   trainer.algorithm.advantage_estimator="grpo" \
   trainer.policy.model.path="Qwen/Qwen3-VL-2B-Instruct" \
   trainer.placement.colocate_all=false \
+  trainer.placement.colocate_policy_ref=true \
   trainer.strategy=fsdp2 \
   trainer.placement.policy_num_gpus_per_node=$NUM_TRAIN_GPUS \
   trainer.placement.ref_num_gpus_per_node=$NUM_TRAIN_GPUS \
+  trainer.ref.fsdp_config.cpu_offload=true \
   generator.inference_engine.num_engines=$NUM_INFERENCE_GPUS \
   generator.inference_engine.tensor_parallel_size=1 \
   generator.inference_engine.gpu_memory_utilization=0.8 \
   generator.inference_engine.async_engine=true \
+  generator.inference_engine.engine_init_kwargs.max_model_len=60000 \
   trainer.epochs=3 \
   trainer.train_batch_size=16 \
   trainer.policy_mini_batch_size=16 \
@@ -54,4 +59,4 @@ uv run --isolated --extra fsdp \
   trainer.ckpt_path="$HOME/ckpts/visgym_maze2d_dev" \
   trainer.eval_interval=-1 \
   trainer.ckpt_interval=-1 \
-  $@
+  "$@"

@@ -10,7 +10,7 @@ name = "skyrl"
 dynamic = ["version"]
 description = "Unified API for training and inference"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "datasets>=4.0.0",
     "pillow>=11.3.0",
@@ -23,6 +23,7 @@ dependencies = [
     "peft",
     "hf_transfer",
     "cloudpathlib>=0.23.0",
+    "pylatexenc",
 ]
 
 [project.optional-dependencies]
@@ -85,7 +86,7 @@ skyrl-train = [
     "datasets>=4.0.0",
     "tensordict",
     "jaxtyping",
-    "skyrl-gym",
+    "skyrl-gym[visgym]",
     # TODO (aaron): Once PyTorch 2.10 is officially supported (stable PyPI torch + matching
     # flash-attn wheels), drop the custom wheel URL
     "flash-attn @ https://github.com/lesj0610/flash-attention/releases/download/v2.8.3-cu12-torch2.10-cp312/flash_attn-2.8.3%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl ; sys_platform == 'linux' and python_version == '3.12' and platform_machine == 'x86_64'",
@@ -101,7 +102,7 @@ skyrl-train = [
 
 fsdp = [
     "skyrl[skyrl-train]",
-    "vllm==0.18.0; sys_platform == 'linux'",
+    "vllm; sys_platform == 'linux'",
     "vllm-router; sys_platform == 'linux'",
     # TODO (aaron): Once PyTorch 2.10 is officially supported (stable PyPI torch + matching
     # flash-attn wheels), drop the custom wheel URL
@@ -120,7 +121,7 @@ megatron = [
     # flash-attn wheels), drop the custom wheel URL
     "flash-attn @ https://github.com/lesj0610/flash-attention/releases/download/v2.8.3-cu12-torch2.10-cp312/flash_attn-2.8.3%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl ; sys_platform == 'linux' and python_version == '3.12' and platform_machine == 'x86_64'",
     "flash-attn==2.8.3; sys_platform == 'linux' and (python_version != '3.12' or platform_machine != 'x86_64')",
-    "vllm==0.18.0; sys_platform == 'linux'",
+    "vllm; sys_platform == 'linux'",
     "vllm-router; sys_platform == 'linux'",
     "torch==2.10.0; sys_platform == 'linux'",
     "flashinfer-python==0.6.6; sys_platform == 'linux' and platform_machine == 'x86_64'",
@@ -165,6 +166,7 @@ dev = [
     "cloudpathlib[s3]",
     "alembic",
     "griffe2md",
+    "gymnasium",
 ]
 
 [tool.setuptools]
@@ -218,6 +220,8 @@ override-dependencies = [
     "transformer-engine[pytorch]==2.10.0; sys_platform == 'linux'",
     "megatron-core==0.16.0; sys_platform == 'linux'",
     "ml_dtypes>=0.5.0; sys_platform == 'linux'",
+    "ray==2.51.1; sys_platform == 'linux'",
+    "pyopengl>=3.1.7",
 ]
 
 [tool.uv.extra-build-dependencies]
@@ -249,6 +253,8 @@ explicit = true
 
 [tool.uv.sources]
 skyrl-gym = { path = "./skyrl-gym", editable = true }
+gymnasium = { path = "./VisGym", editable = true }
+vllm = { path = "/home/ray/default/skyrl-vlm/vllm", editable = true }
 # flashinfer wheels are only available from the custom cu128 index
 flashinfer-jit-cache = { index = "flashinfer-cu128", marker = "sys_platform == 'linux'" }
 # Use CUDA torch on Linux, CPU torch on macOS (must match skyrl-train config)

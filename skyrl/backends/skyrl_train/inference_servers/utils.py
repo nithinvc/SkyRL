@@ -29,6 +29,7 @@ def build_vllm_cli_args(cfg: SkyRLTrainConfig) -> Namespace:
         seed=cfg.trainer.seed,
         gpu_memory_utilization=ie_cfg.gpu_memory_utilization,
         enable_prefix_caching=ie_cfg.enable_prefix_caching,
+        enable_chunked_prefill=ie_cfg.enable_chunked_prefill,
         enforce_eager=ie_cfg.enforce_eager,
         max_num_batched_tokens=ie_cfg.max_num_batched_tokens,
         max_num_seqs=ie_cfg.max_num_seqs,
@@ -45,6 +46,21 @@ def build_vllm_cli_args(cfg: SkyRLTrainConfig) -> Namespace:
             else None
         ),
     )
+
+    # Resolve engine_init_kwargs once for use below
+    engine_kwargs = get_config_as_dict(ie_cfg.engine_init_kwargs)
+
+    # Compute max_model_len from rope_scaling if not explicitly provided
+    if "max_model_len" not in engine_kwargs:
+        rope_scaling = cfg.trainer.rope_scaling
+        if rope_scaling:
+            rope_factor = rope_scaling.get("factor", None)
+            rope_max_pos = rope_scaling.get("original_max_position_embeddings", None)
+            if rope_factor is not None and rope_max_pos is not None:
+                overrides["max_model_len"] = int(rope_factor * rope_max_pos)
+            if cfg.trainer.rope_theta is not None:
+                overrides["rope_theta"] = cfg.trainer.rope_theta
+
     for key, value in overrides.items():
         setattr(args, key, value)
 
@@ -55,8 +71,7 @@ def build_vllm_cli_args(cfg: SkyRLTrainConfig) -> Namespace:
         args.max_loras = 1
         args.fully_sharded_loras = ie_cfg.fully_sharded_loras
 
-    # Add any extra engine_init_kwargs
-    engine_kwargs = get_config_as_dict(ie_cfg.engine_init_kwargs)
+    # Apply pass-through engine_init_kwargs (overrides everything above)
     for key, value in engine_kwargs.items():
         setattr(args, key, value)
 
