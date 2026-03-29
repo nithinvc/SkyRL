@@ -14,8 +14,8 @@ set -x
 #   bash examples/train/visgym/run_visgym.sh
 
 : "${DATA_DIR:="$HOME/data/visgym"}"
-: "${NUM_INFERENCE_GPUS:=2}"
-: "${NUM_TRAIN_GPUS:=2}"
+: "${NUM_INFERENCE_GPUS:=4}"
+: "${NUM_TRAIN_GPUS:=4}"
 : "${LOGGER:=console}"
 
 _SKYRL_USE_NEW_INFERENCE=1 \
@@ -29,7 +29,7 @@ uv run --isolated --extra fsdp \
   trainer.strategy=fsdp2 \
   trainer.placement.policy_num_gpus_per_node=$NUM_TRAIN_GPUS \
   trainer.placement.ref_num_gpus_per_node=$NUM_TRAIN_GPUS \
-  trainer.ref.fsdp_config.cpu_offload=true \
+  trainer.ref.fsdp_config.cpu_offload=false \
   generator.inference_engine.num_engines=$NUM_INFERENCE_GPUS \
   generator.inference_engine.tensor_parallel_size=1 \
   generator.inference_engine.gpu_memory_utilization=0.8 \
@@ -57,6 +57,7 @@ uv run --isolated --extra fsdp \
   trainer.resume_mode=null \
   trainer.log_path="/tmp/skyrl-logs" \
   trainer.ckpt_path="$HOME/ckpts/visgym_maze2d_dev" \
+  trainer.use_sample_packing=false \
   trainer.eval_interval=-1 \
   trainer.ckpt_interval=-1 \
   "$@"
