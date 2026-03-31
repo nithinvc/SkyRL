@@ -23,7 +23,7 @@ uv run --isolated --extra fsdp \
   python examples/train/visgym/visgym_entrypoint.py \
   data.train_data="['$DATA_DIR/train.parquet']" \
   trainer.algorithm.advantage_estimator="grpo" \
-  trainer.policy.model.path="Qwen/Qwen3-VL-2B-Instruct" \
+  trainer.policy.model.path="Qwen/Qwen3-VL-4B-Thinking" \
   trainer.placement.colocate_all=false \
   trainer.placement.colocate_policy_ref=true \
   trainer.strategy=fsdp2 \
@@ -42,9 +42,9 @@ uv run --isolated --extra fsdp \
   trainer.micro_train_batch_size_per_gpu=4 \
   trainer.update_epochs_per_batch=1 \
   trainer.max_prompt_length=2048 \
-  generator.sampling_params.max_generate_length=256 \
+  generator.sampling_params.max_generate_length=4096 \
   generator.sampling_params.temperature=1.0 \
-  generator.max_turns=10 \
+  generator.max_turns=48 \
   generator.max_input_length=4096 \
   generator.n_samples_per_prompt=4 \
   generator.batched=false \
