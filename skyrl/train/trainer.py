@@ -27,7 +27,7 @@ from skyrl.backends.skyrl_train.inference_engines.inference_engine_client import
 from skyrl.backends.skyrl_train.inference_engines.utils import (
     get_sampling_params_for_backend,
 )
-from skyrl.backends.skyrl_train.training_batch import TrainingInputBatch
+from skyrl.backends.skyrl_train.training_batch import TensorList, TrainingInputBatch
 from skyrl.backends.skyrl_train.utils import ppo_utils
 from skyrl.backends.skyrl_train.utils.io import io
 from skyrl.backends.skyrl_train.utils.ppo_utils import (
@@ -42,6 +42,7 @@ from skyrl.backends.skyrl_train.workers.worker import PPORayActorGroup
 from skyrl.backends.skyrl_train.workers.worker_dispatch import WorkerDispatch
 from skyrl.backends.skyrl_train.workers.worker_utils import reduce_metrics
 from skyrl.env_vars import SKYRL_RAY_PG_TIMEOUT_IN_S
+from skyrl.tinker import types
 from skyrl.train.config import SkyRLTrainConfig
 from skyrl.train.dataset import PromptDataset
 from skyrl.train.dataset.preprocess import (
@@ -77,172 +78,6 @@ from skyrl.train.utils.trainer_utils import (
     zero_variance_filter,
 )
 from skyrl.train.utils.utils import ResolvedPlacementGroup, configure_ray_worker_logging
-
-
-def _rebuild_vision_response(
-    rendered, gen_prompt_ids, gen_response_ids, gen_loss_mask, gen_rewards, gen_logprobs,
-    model_input, mm_placeholders,
-):
-    """Rebuild prompt/response split and per-token arrays for vision training.
-
-    The generator builds response_ids in [resp, suffix_end_zeros, obs_zeros] order,
-    but the rendered sequence from VLLMRenderer is in [suffix, resp, end, obs] order.
-    Additionally, image placeholder counts may differ between the local image_processor
-    and vLLM. This function recomputes the split and rebuilds loss_mask/rewards/logprobs
-    to match the rendered token ordering.
-    """
-    from skyrl.tinker.types import EncodedTextChunk, ImageChunk
-
-    chunks = model_input.chunks
-    gen_prompt_len = len(gen_prompt_ids)
-
-    # Phase 1: find prompt/response chunk boundary by walking chunks using expected_tokens
-    accumulated = 0
-    prompt_end_idx = len(chunks)
-    n_prompt_images = 0
-
-    for i, chunk in enumerate(chunks):
-        if accumulated >= gen_prompt_len:
-            prompt_end_idx = i
-            break
-        if isinstance(chunk, EncodedTextChunk):
-            accumulated += len(chunk.tokens)
-        elif isinstance(chunk, ImageChunk):
-            accumulated += (chunk.expected_tokens or 0)
-            n_prompt_images += 1
-
-    # Phase 2: compute actual prompt length using vLLM placeholder counts
-    actual_prompt_len = 0
-    img_idx = 0
-    for chunk in chunks[:prompt_end_idx]:
-        if isinstance(chunk, EncodedTextChunk):
-            actual_prompt_len += len(chunk.tokens)
-        elif isinstance(chunk, ImageChunk):
-            if mm_placeholders and img_idx < len(mm_placeholders):
-                actual_prompt_len += mm_placeholders[img_idx].length
-            else:
-                actual_prompt_len += (chunk.expected_tokens or 0)
-            img_idx += 1
-
-    prompt_ids = list(rendered[:actual_prompt_len])
-    response_ids = list(rendered[actual_prompt_len:])
-
-    # Phase 3: parse generator's per-turn structure from loss_mask
-    turns = []
-    pos = 0
-    while pos < len(gen_loss_mask):
-        resp_start = pos
-        while pos < len(gen_loss_mask) and gen_loss_mask[pos] == 1:
-            pos += 1
-        resp_len = pos - resp_start
-
-        zeros_start = pos
-        while pos < len(gen_loss_mask) and gen_loss_mask[pos] == 0:
-            pos += 1
-        zeros_len = pos - zeros_start
-
-        if resp_len > 0 or zeros_len > 0:
-            turns.append({"resp_start": resp_start, "resp_len": resp_len, "zeros_len": zeros_len})
-
-    # Phase 4: determine suffix length from first response chunk
-    response_chunks = chunks[prompt_end_idx:]
-    suffix_len = 0
-    if response_chunks and isinstance(response_chunks[0], EncodedTextChunk):
-        suffix_len = len(response_chunks[0].tokens)
-
-    # Phase 5: walk response chunks per turn, rebuild arrays in rendered order
-    new_loss_mask = []
-    new_rewards = []
-    new_logprobs = [] if gen_logprobs is not None else None
-
-    chunk_idx = 0
-    resp_img_idx = n_prompt_images
-
-    for turn_idx, turn in enumerate(turns):
-        N = turn["resp_len"]
-        gen_start = turn["resp_start"]
-        obs_expected = max(0, turn["zeros_len"] - suffix_len - 1)
-
-        # Suffix chunk (rendered order: comes first)
-        if chunk_idx < len(response_chunks) and isinstance(response_chunks[chunk_idx], EncodedTextChunk):
-            S = len(response_chunks[chunk_idx].tokens)
-            new_loss_mask.extend([0] * S)
-            new_rewards.extend([0.0] * S)
-            if new_logprobs is not None:
-                new_logprobs.extend([0.0] * S)
-            chunk_idx += 1
-        else:
-            S = 0
-
-        # Response tokens
-        if chunk_idx < len(response_chunks) and isinstance(response_chunks[chunk_idx], EncodedTextChunk):
-            new_loss_mask.extend([1] * N)
-            new_rewards.extend(gen_rewards[gen_start:gen_start + N])
-            if new_logprobs is not None:
-                new_logprobs.extend(gen_logprobs[gen_start:gen_start + N])
-            chunk_idx += 1
-
-        # End token
-        if chunk_idx < len(response_chunks) and isinstance(response_chunks[chunk_idx], EncodedTextChunk):
-            E = len(response_chunks[chunk_idx].tokens)
-            new_loss_mask.extend([0] * E)
-            new_rewards.extend([0.0] * E)
-            if new_logprobs is not None:
-                new_logprobs.extend([0.0] * E)
-            chunk_idx += 1
-        else:
-            E = 0
-
-        # Observation chunks: consume until we've accounted for obs_expected tokens
-        obs_accumulated_expected = 0
-        obs_actual_total = 0
-        while chunk_idx < len(response_chunks) and obs_accumulated_expected < obs_expected:
-            c = response_chunks[chunk_idx]
-            if isinstance(c, EncodedTextChunk):
-                n = len(c.tokens)
-                new_loss_mask.extend([0] * n)
-                new_rewards.extend([0.0] * n)
-                if new_logprobs is not None:
-                    new_logprobs.extend([0.0] * n)
-                obs_accumulated_expected += n
-                obs_actual_total += n
-            elif isinstance(c, ImageChunk):
-                expected = c.expected_tokens or 0
-                if mm_placeholders and resp_img_idx < len(mm_placeholders):
-                    actual = mm_placeholders[resp_img_idx].length
-                else:
-                    actual = expected
-                new_loss_mask.extend([0] * actual)
-                new_rewards.extend([0.0] * actual)
-                if new_logprobs is not None:
-                    new_logprobs.extend([0.0] * actual)
-                obs_accumulated_expected += expected
-                obs_actual_total += actual
-                resp_img_idx += 1
-            chunk_idx += 1
-
-    # Verification: model-generated token count must be preserved
-    gen_model_tokens = sum(1 for m in gen_loss_mask if m == 1)
-    new_model_tokens = sum(1 for m in new_loss_mask if m == 1)
-
-    if len(new_loss_mask) != len(response_ids):
-        logger.error(
-            f"Vision rebuild length mismatch: loss_mask={len(new_loss_mask)} vs response={len(response_ids)}. "
-            f"Falling back to truncation/padding."
-        )
-        diff = len(response_ids) - len(new_loss_mask)
-        if diff > 0:
-            new_loss_mask.extend([0] * diff)
-            new_rewards.extend([0.0] * diff)
-            if new_logprobs is not None:
-                new_logprobs.extend([0.0] * diff)
-        elif diff < 0:
-            new_loss_mask = new_loss_mask[:len(response_ids)]
-            new_rewards = new_rewards[:len(response_ids)]
-            if new_logprobs is not None:
-                new_logprobs = new_logprobs[:len(response_ids)]
-
-    return prompt_ids, response_ids, new_loss_mask, new_rewards, new_logprobs
 
 
 class RayPPOTrainer:
@@ -432,7 +267,9 @@ class RayPPOTrainer:
                         if model_inputs and self.vllm_renderer:
                             vision_data = await self.render_vision_inputs(model_inputs)
                         training_input: TrainingInputBatch = self.convert_to_training_input(
-                            generator_output, uids, vision_data=vision_data,
+                            generator_output,
+                            uids,
+                            vision_data=vision_data,
                         )
 
                     # 4. Inference and calculate values, log probs, rewards, kl divergence
@@ -783,14 +620,18 @@ class RayPPOTrainer:
         serialized tensor data.
         """
         import io
+
         from PIL import Image
+
         from skyrl.tinker.types import ImageChunk
 
-        if not hasattr(self, '_image_processor'):
+        if not hasattr(self, "_image_processor"):
             from transformers import AutoImageProcessor
+
             model_path = self.cfg.trainer.policy.model.path
             self._image_processor = AutoImageProcessor.from_pretrained(
-                model_path, trust_remote_code=True,
+                model_path,
+                trust_remote_code=True,
             )
             logger.info(f"Loaded image processor from {model_path} for local pixel_values computation")
 
@@ -857,19 +698,17 @@ class RayPPOTrainer:
                     )
                 else:
                     dim = (
-                        pixel_values_list[0].shape[-1]
-                        if pixel_values_list and pixel_values_list[0].numel() > 0
-                        else 0
+                        pixel_values_list[0].shape[-1] if pixel_values_list and pixel_values_list[0].numel() > 0 else 0
                     )
                     pixel_values_list.append(torch.empty(0, dim))
                     image_grid_thw_list.append(torch.empty(0, 3, dtype=torch.long))
             pixel_values = TensorList(pixel_values_list)
             image_grid_thw = TensorList(image_grid_thw_list)
         else:
-            from skyrl.tinker.types import ImageChunk, ImageAssetPointerChunk
+            from skyrl.tinker.types import ImageAssetPointerChunk, ImageChunk
+
             has_images = any(
-                any(isinstance(c, (ImageChunk, ImageAssetPointerChunk)) for c in mi.chunks)
-                for mi in model_inputs
+                any(isinstance(c, (ImageChunk, ImageAssetPointerChunk)) for c in mi.chunks) for mi in model_inputs
             )
             if has_images:
                 pixel_values_list, image_grid_thw_list = self._compute_pixel_values_locally(model_inputs)
@@ -878,8 +717,19 @@ class RayPPOTrainer:
 
         return rendered_prompt_ids, pixel_values, image_grid_thw, mm_placeholders_list
 
+    def tinker_convert_to_training_input(
+        self, model_inputs: list[types.ModelInput], uids: List[str]
+    ) -> tuple[list[list[int]], TensorList | None, TensorList | None]:
+        """
+        Renders the model inputs and returns reponse ids and pixel values and image grid thw
+        """
+        pass
+
     def convert_to_training_input(
-        self, generator_output: GeneratorOutput, uids: List[str], vision_data=None,
+        self,
+        generator_output: GeneratorOutput,
+        uids: List[str],
+        vision_data=None,
     ) -> TrainingInputBatch:
         """Converts lists to a padded batch of tensors for training.
 
@@ -897,47 +747,9 @@ class RayPPOTrainer:
         rollout_expert_indices: Optional[List[List[List[List[int]]]]] = generator_output.get(
             "rollout_expert_indices", None
         )
-
-        # When vision data is available, use rendered prompt_ids (which contain
-        # real image placeholder token IDs) instead of text-only tokens with 0s.
-        # The generator builds response_ids in [resp, suffix_end, obs] order but
-        # the rendered sequence is in [suffix, resp, end, obs] order. We must
-        # recompute the prompt/response split and rebuild per-token arrays
-        # (loss_mask, rewards, logprobs) in rendered token order, also accounting
-        # for possible image placeholder count differences between the local
-        # image_processor and vLLM's render endpoint.
-        if vision_data is not None:
-            rendered_prompt_ids, pixel_values, image_grid_thw, mm_placeholders_list = vision_data
-            model_inputs_list = generator_output.get("model_inputs", [])
-            original_prompt_ids = generator_output["prompt_token_ids"]
-
-            prompt_ids = []
-            response_ids_new = []
-
-            for idx, (rendered, resp, lm) in enumerate(zip(rendered_prompt_ids, response_ids, loss_masks)):
-                mi = model_inputs_list[idx] if model_inputs_list and idx < len(model_inputs_list) else None
-                mm_pl = mm_placeholders_list[idx] if mm_placeholders_list and idx < len(mm_placeholders_list) else None
-
-                if mi is not None:
-                    gen_prompt = original_prompt_ids[idx]
-                    gen_rew = rewards[idx]
-                    gen_lp = logprobs[idx] if logprobs else None
-
-                    p_ids, r_ids, new_lm, new_rew, new_lp = _rebuild_vision_response(
-                        rendered, gen_prompt, resp, lm, gen_rew, gen_lp, mi, mm_pl,
-                    )
-                    prompt_ids.append(p_ids)
-                    response_ids_new.append(r_ids)
-                    loss_masks[idx] = new_lm
-                    rewards[idx] = new_rew
-                    if logprobs is not None and new_lp is not None:
-                        logprobs[idx] = new_lp
-                else:
-                    resp_len = len(resp)
-                    prompt_ids.append(rendered[:-resp_len] if resp_len > 0 else rendered)
-                    response_ids_new.append(rendered[-resp_len:] if resp_len > 0 else [])
-
-            response_ids = response_ids_new
+        model_inputs: list[types.ModelInput] = generator_output.get("model_inputs", None)
+        if model_inputs is not None:
+            response_ids, pixel_values, image_grid_thw = self.tinker_convert_to_training_input(model_inputs, uids)
 
         (
             sequences_tensor,
@@ -1237,10 +1049,14 @@ class RayPPOTrainer:
                     additional_dims = tuple(tensor.shape[1:]) if len(tensor.shape) > 1 else ()
 
                     if key == "is_last_step":
-                        padding_tensor = torch.ones(pad_size, *additional_dims, dtype=tensor.dtype, device=tensor.device)
+                        padding_tensor = torch.ones(
+                            pad_size, *additional_dims, dtype=tensor.dtype, device=tensor.device
+                        )
                     elif key == "loss_mask":
                         # ensures that padding tensors don't count towards the loss
-                        padding_tensor = torch.zeros(pad_size, *additional_dims, dtype=tensor.dtype, device=tensor.device)
+                        padding_tensor = torch.zeros(
+                            pad_size, *additional_dims, dtype=tensor.dtype, device=tensor.device
+                        )
                     else:
                         # ensures all padding tensors are in a valid format by cloning `pad_size` from the original input
                         # `pad_size` is guaranteed to be smaller than batch_size

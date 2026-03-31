@@ -32,6 +32,10 @@ def render_model_input(model_inputs: list[ModelInput]) -> list[RenderedModelInpu
     ]
 
 
+def decode_mm_kwargs_item(RenderedModelInput: RenderedModelInput):
+    pass
+
+
 class VLLMRenderer:
     """Renders ModelInputs by calling vLLM's /v1/chat/completions/render for image placeholders.
 
@@ -142,9 +146,11 @@ class VLLMRenderer:
                     f"Image {i}: expected_tokens={chunk.expected_tokens} but render returned {length} placeholder tokens"
                 )
 
-            rendered.append({
-                "placeholder_tokens": tokens,
-                "kwargs_data": image_kwargs[i] if i < len(image_kwargs) else None,
-            })
+            rendered.append(
+                {
+                    "placeholder_tokens": tokens,
+                    "kwargs_data": image_kwargs[i] if i < len(image_kwargs) else None,
+                }
+            )
 
         return rendered
