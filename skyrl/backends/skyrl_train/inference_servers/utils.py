@@ -45,6 +45,7 @@ def build_vllm_cli_args(cfg: SkyRLTrainConfig) -> Namespace:
             if cfg.generator.inference_engine.served_model_name
             else None
         ),
+        disable_mm_preprocessor_cache=True,
     )
 
     # Resolve engine_init_kwargs once for use below
