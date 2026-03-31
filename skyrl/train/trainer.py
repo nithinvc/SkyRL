@@ -263,13 +263,13 @@ class RayPPOTrainer:
                     # 3. Convert GeneratorOutput to TrainingInputBatch
                     with Timer("convert_to_training_input", self.all_timings):
                         model_inputs = generator_output.get("model_inputs")
-                        vision_data = None
+                        rendered = None
                         if model_inputs and self.vllm_renderer:
-                            vision_data = await self.render_vision_inputs(model_inputs)
+                            rendered = await self.vllm_renderer.render_async(model_inputs)
                         training_input: TrainingInputBatch = self.convert_to_training_input(
                             generator_output,
                             uids,
-                            vision_data=vision_data,
+                            rendered=rendered,
                         )
 
                     # 4. Inference and calculate values, log probs, rewards, kl divergence
@@ -612,131 +612,56 @@ class RayPPOTrainer:
             self.cfg.generator.inference_engine,
         )
 
-    def _compute_pixel_values_locally(self, model_inputs):
-        """Fallback: compute pixel_values from raw images when vLLM kwargs_data is unavailable.
+    def tinker_convert_to_training_input(
+        self,
+        rendered: list[types.RenderedModelInput],
+        original_response_ids: List[List[int]],
+    ) -> tuple[list[list[int]], TensorList | None, TensorList | None]:
+        """Extract response_ids and vision tensors from rendered model inputs.
 
-        This handles the case where vLLM's multimodal processor cache returns None
-        for cached items (LRU sender cache behavior), meaning kwargs_data has no
-        serialized tensor data.
-        """
-        import io
-
-        from PIL import Image
-
-        from skyrl.tinker.types import ImageChunk
-
-        if not hasattr(self, "_image_processor"):
-            from transformers import AutoImageProcessor
-
-            model_path = self.cfg.trainer.policy.model.path
-            self._image_processor = AutoImageProcessor.from_pretrained(
-                model_path,
-                trust_remote_code=True,
-            )
-            logger.info(f"Loaded image processor from {model_path} for local pixel_values computation")
-
-        pixel_values_list: list = []
-        image_grid_thw_list: list = []
-        for mi in model_inputs:
-            images = []
-            for c in mi.chunks:
-                if isinstance(c, ImageChunk):
-                    pil_img = Image.open(io.BytesIO(c.data))
-                    if pil_img.mode != "RGB":
-                        pil_img = pil_img.convert("RGB")
-                    images.append(pil_img)
-            if images:
-                processed = self._image_processor(images=images, return_tensors="pt")
-                pixel_values_list.append(processed["pixel_values"])
-                image_grid_thw_list.append(processed["image_grid_thw"])
-            else:
-                pixel_values_list.append(torch.empty(0))
-                image_grid_thw_list.append(torch.empty(0, 3, dtype=torch.long))
-        return pixel_values_list, image_grid_thw_list
-
-    async def render_vision_inputs(self, model_inputs):
-        """Render ModelInputs via vLLM to get pixel_values and image_grid_thw.
+        Args:
+            rendered: RenderedModelInputs from vllm_renderer.render_async().
+            original_response_ids: response_ids from the generator, used to
+                assert length consistency with the rendered token sequences.
 
         Returns:
-            Tuple of (rendered_prompt_ids, pixel_values TensorList, image_grid_thw TensorList, mm_placeholders)
+            (response_ids, pixel_values, image_grid_thw)
         """
-        from skyrl.backends.skyrl_train.training_batch import TensorList
+        from skyrl.backends.renderer import decode_mm_kwargs
 
-        rendered = await self.vllm_renderer.render_async(model_inputs)
-        rendered_prompt_ids = [r.prompt_ids for r in rendered]
-        mm_placeholders_list = [r.multi_modal_placeholders for r in rendered]
+        response_ids = [r.prompt_ids for r in rendered]
 
-        # Decode multi-modal kwargs_data into pixel_values / image_grid_thw
-        # (follows the pattern in skyrl_train_backend.py:_to_training_batch)
-        has_vision = any(r.multi_modal_kwargs for r in rendered)
-        pixel_values = None
-        image_grid_thw = None
-
-        if has_vision:
-            from vllm.entrypoints.serve.disagg.mm_serde import decode_mm_kwargs_item
-
-            pixel_values_list: list = []
-            image_grid_thw_list: list = []
-            for r in rendered:
-                if r.multi_modal_kwargs and "image" in r.multi_modal_kwargs:
-                    pv_parts: list = []
-                    thw_parts: list = []
-                    for b64_str in r.multi_modal_kwargs["image"]:
-                        item = decode_mm_kwargs_item(b64_str)
-                        data = item.get_data()
-                        if "pixel_values" in data:
-                            pv = data["pixel_values"]
-                            if isinstance(pv, torch.Tensor):
-                                pv_parts.append(pv)
-                        if "image_grid_thw" in data:
-                            thw = data["image_grid_thw"]
-                            if isinstance(thw, torch.Tensor):
-                                thw_parts.append(thw)
-                    pixel_values_list.append(torch.cat(pv_parts, dim=0) if pv_parts else torch.empty(0))
-                    image_grid_thw_list.append(
-                        torch.stack(thw_parts, dim=0) if thw_parts else torch.empty(0, 3, dtype=torch.long)
-                    )
-                else:
-                    dim = (
-                        pixel_values_list[0].shape[-1] if pixel_values_list and pixel_values_list[0].numel() > 0 else 0
-                    )
-                    pixel_values_list.append(torch.empty(0, dim))
-                    image_grid_thw_list.append(torch.empty(0, 3, dtype=torch.long))
-            pixel_values = TensorList(pixel_values_list)
-            image_grid_thw = TensorList(image_grid_thw_list)
-        else:
-            from skyrl.tinker.types import ImageAssetPointerChunk, ImageChunk
-
-            has_images = any(
-                any(isinstance(c, (ImageChunk, ImageAssetPointerChunk)) for c in mi.chunks) for mi in model_inputs
+        for i, (new, orig) in enumerate(zip(response_ids, original_response_ids)):
+            assert len(new) == len(orig), (
+                f"Sample {i}: rendered response length {len(new)} != " f"generator response length {len(orig)}"
             )
-            if has_images:
-                pixel_values_list, image_grid_thw_list = self._compute_pixel_values_locally(model_inputs)
-                pixel_values = TensorList(pixel_values_list)
-                image_grid_thw = TensorList(image_grid_thw_list)
 
-        return rendered_prompt_ids, pixel_values, image_grid_thw, mm_placeholders_list
+        has_vision = any(r.multi_modal_kwargs for r in rendered)
+        if not has_vision:
+            return response_ids, None, None
 
-    def tinker_convert_to_training_input(
-        self, model_inputs: list[types.ModelInput], uids: List[str]
-    ) -> tuple[list[list[int]], TensorList | None, TensorList | None]:
-        """
-        Renders the model inputs and returns reponse ids and pixel values and image grid thw
-        """
-        pass
+        pixel_values_list: list[torch.Tensor] = []
+        image_grid_thw_list: list[torch.Tensor] = []
+        for r in rendered:
+            pv, thw = decode_mm_kwargs(r)
+            pixel_values_list.append(pv)
+            image_grid_thw_list.append(thw)
+
+        return response_ids, TensorList(pixel_values_list), TensorList(image_grid_thw_list)
 
     def convert_to_training_input(
         self,
         generator_output: GeneratorOutput,
         uids: List[str],
-        vision_data=None,
+        rendered: Optional[list[types.RenderedModelInput]] = None,
     ) -> TrainingInputBatch:
         """Converts lists to a padded batch of tensors for training.
 
         Args:
-            vision_data: Optional tuple of (rendered_prompt_ids, pixel_values, image_grid_thw)
-                from render_vision_inputs(). When provided, rendered_prompt_ids are used as
-                sequences (with real image placeholder token IDs) instead of text-only tokens.
+            rendered: Optional list of RenderedModelInputs from vllm_renderer.
+                When provided together with model_inputs in generator_output,
+                tinker_convert_to_training_input is used to extract response_ids
+                with real image placeholder tokens and vision tensors.
         """
         prompt_ids: List[List[int]] = generator_output["prompt_token_ids"]
         response_ids: List[List[int]] = generator_output["response_ids"]
@@ -747,9 +672,13 @@ class RayPPOTrainer:
         rollout_expert_indices: Optional[List[List[List[List[int]]]]] = generator_output.get(
             "rollout_expert_indices", None
         )
-        model_inputs: list[types.ModelInput] = generator_output.get("model_inputs", None)
-        if model_inputs is not None:
-            response_ids, pixel_values, image_grid_thw = self.tinker_convert_to_training_input(model_inputs, uids)
+        pixel_values = None
+        image_grid_thw = None
+        if rendered is not None:
+            response_ids, pixel_values, image_grid_thw = self.tinker_convert_to_training_input(
+                rendered,
+                response_ids,
+            )
 
         (
             sequences_tensor,
@@ -794,7 +723,7 @@ class RayPPOTrainer:
                 else None
             ),
         }
-        if vision_data is not None and pixel_values is not None:
+        if pixel_values is not None:
             batch_dict["pixel_values"] = pixel_values
             batch_dict["image_grid_thw"] = image_grid_thw
         training_input = TrainingInputBatch(batch_dict)

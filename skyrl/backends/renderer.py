@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Tuple, Union
+
+import torch
 
 from skyrl.tinker.types import (
     EncodedTextChunk,
@@ -32,8 +34,33 @@ def render_model_input(model_inputs: list[ModelInput]) -> list[RenderedModelInpu
     ]
 
 
-def decode_mm_kwargs_item(RenderedModelInput: RenderedModelInput):
-    pass
+def decode_mm_kwargs(rendered: RenderedModelInput) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Decode a RenderedModelInput's multi_modal_kwargs into vision tensors.
+
+    Returns:
+        (pixel_values, image_grid_thw) — concatenated across all images in this
+        sample.  Returns empty tensors when the sample has no vision data.
+    """
+    if not rendered.multi_modal_kwargs or "image" not in rendered.multi_modal_kwargs:
+        return torch.empty(0), torch.empty(0, 3, dtype=torch.long)
+
+    from vllm.entrypoints.serve.disagg.mm_serde import (
+        decode_mm_kwargs_item as _vllm_decode,
+    )
+
+    pv_parts: list[torch.Tensor] = []
+    thw_parts: list[torch.Tensor] = []
+    for b64_str in rendered.multi_modal_kwargs["image"]:
+        item = _vllm_decode(b64_str)
+        data = item.get_data()
+        if "pixel_values" in data and isinstance(data["pixel_values"], torch.Tensor):
+            pv_parts.append(data["pixel_values"])
+        if "image_grid_thw" in data and isinstance(data["image_grid_thw"], torch.Tensor):
+            thw_parts.append(data["image_grid_thw"])
+
+    pixel_values = torch.cat(pv_parts, dim=0) if pv_parts else torch.empty(0)
+    image_grid_thw = torch.stack(thw_parts, dim=0) if thw_parts else torch.empty(0, 3, dtype=torch.long)
+    return pixel_values, image_grid_thw
 
 
 class VLLMRenderer:
