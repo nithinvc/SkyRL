@@ -6,21 +6,22 @@ RemoteInferenceClient.sample() for generation. Drop-in replacement for
 SkyRLGymGenerator with the same GeneratorInput/GeneratorOutput interface.
 """
 
-from __future__ import annotations
-
 import asyncio
 import copy
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 from uuid import uuid4
 
-from loguru import logger
+import numpy as np
 from tqdm.asyncio import tqdm
 
 import skyrl_gym
-from skyrl.backends.skyrl_train.inference_servers.remote_inference_client import RemoteInferenceClient
-from skyrl.tinker.types import EncodedTextChunk, ImageChunk, ModelInput
+from skyrl.backends.skyrl_train.inference_servers.remote_inference_client import (
+    RemoteInferenceClient,
+)
+from skyrl.tinker import types
+from skyrl.tinker.types import EncodedTextChunk, ModelInput
 from skyrl.train.config import GeneratorConfig, SkyRLGymConfig
 from skyrl.train.generators.base import (
     GeneratorInput,
@@ -29,56 +30,149 @@ from skyrl.train.generators.base import (
     TrajectoryID,
 )
 from skyrl.train.generators.utils import (
-    apply_overlong_filtering,
     get_rollout_metrics,
 )
-from skyrl.train.renderers.base import Message, RenderContext, Renderer, get_text_content
+from skyrl.train.renderers.base import (
+    Message,
+    Renderer,
+    get_text_content,
+)
 from skyrl_gym.envs.base_text_env import BaseTextEnvStepOutput
 
 
 @dataclass
-class TrajectoryOutput:
-    """Output from a single agent_loop execution."""
-
-    response_ids: List[int]
-    reward: Union[List[float], float]
+class TokensWithLogprobs:
+    tokens: list[int]
+    logprobs: list[float]
     stop_reason: str
-    loss_mask: List[int]
-    prompt_ids: List[int]
-    rollout_logprobs: Optional[List[float]]
-    env_metrics: Dict[str, Any]
-    model_input: Optional[ModelInput] = None
 
 
-def _count_chunk_tokens(chunks) -> int:
-    """Count all tokens in a list of chunks (text tokens + image placeholder tokens)."""
-    total = 0
-    for c in chunks:
-        if isinstance(c, EncodedTextChunk):
-            total += len(c.tokens)
-        elif isinstance(c, ImageChunk) and c.expected_tokens is not None:
-            total += c.expected_tokens
-    return total
+@dataclass
+class Transition:
+    observation: ModelInput
+    action: TokensWithLogprobs
 
 
-def _flatten_text_tokens(model_input: ModelInput) -> List[int]:
-    """Extract all text token IDs from a ModelInput."""
-    tokens: List[int] = []
+@dataclass
+class AgentLoopState:
+    history: List[Message]
+    transitions: List[Transition]
+
+
+def _is_prefix(seq1: list[types.ModelInputChunk | int], seq2: list[types.ModelInputChunk | int]) -> bool:
+    """
+    Check if seq1 is a prefix of seq2.
+    """
+    return len(seq1) <= len(seq2) and seq2[: len(seq1)] == seq1
+
+
+def _extract_single_agent_loop_state(
+    agent_loop_state: AgentLoopState,
+) -> GeneratorOutput:
+    """
+    Returns fields
+    """
+    return {
+        "response_ids": None,
+        "reward": None,
+        "stop_reason": None,
+        "loss_mask": None,
+        "prompt_ids": None,
+        "env_metrics": None,
+        "model_input": None,
+    }
+
+
+def agent_loop_states_to_generator_output(
+    agent_loop_states: List[AgentLoopState],
+) -> GeneratorOutput:
+    """
+    Converts the agent loop state to a generator output.
+    """
+    outputs = [_extract_single_agent_loop_state(state) for state in agent_loop_states]
+    return GeneratorOutput(
+        prompt_token_ids=[output["prompt_ids"] for output in outputs],
+        response_ids=[output["response_ids"] for output in outputs],
+        rewards=[output["reward"] for output in outputs],
+        loss_masks=[output["loss_mask"] for output in outputs],
+        stop_reasons=[output["stop_reason"] for output in outputs],
+        rollout_metrics=None,
+        rollout_logprobs=None,
+    )
+
+
+def get_rollout_metrics(
+    responses: List[List[int]],
+    rewards: Union[List[float], List[List[float]]],
+    env_metrics: Optional[List[Dict[str, Any]]] = None,
+    env_classes: Optional[List[str]] = None,
+):
+    """
+    Computes rollout metrics including token statistics and optional environment-specific metrics.
+
+    Args:
+        responses: List of token ID sequences for each response
+        rewards: List of rewards (either per-trajectory or per-token)
+        env_metrics: Optional list of environment-specific metrics for each trajectory
+        env_classes: Optional list of environment class names for each trajectory
+
+    Returns:
+        Dictionary of aggregated metrics
+    """
+    num_tokens_arr = np.array([len(response) for response in responses])
+    # Support both response-level and token-level rewards
+    flat_rewards = []
+    for r in rewards:
+        if isinstance(r, list):
+            flat_rewards.append(float(np.sum(r)))
+        else:
+            flat_rewards.append(float(r))
+    flat_rewards_arr = np.array(flat_rewards)
+    non_zero_rewards_arr = flat_rewards_arr > 0.0
+    zero_rewards_arr = flat_rewards_arr == 0.0
+    # average tokens for non zero rewards
+    avg_tokens_non_zero_rewards = (
+        np.mean(num_tokens_arr[non_zero_rewards_arr]) if non_zero_rewards_arr.sum() > 0 else np.zeros(1)
+    )
+    # average tokens for zero rewards
+    avg_tokens_zero_rewards = np.mean(num_tokens_arr[zero_rewards_arr]) if zero_rewards_arr.sum() > 0 else np.zeros(1)
+
+    rollout_metrics = {
+        "generate/min_num_tokens": np.min(num_tokens_arr).item(),
+        "generate/max_num_tokens": np.max(num_tokens_arr).item(),
+        "generate/avg_num_tokens": np.mean(num_tokens_arr).item(),
+        "generate/std_num_tokens": np.std(num_tokens_arr).item(),
+        "generate/avg_tokens_non_zero_rewards": avg_tokens_non_zero_rewards.item(),
+        "generate/avg_tokens_zero_rewards": avg_tokens_zero_rewards.item(),
+    }
+
+    if env_metrics is not None and env_classes is not None:
+        env_to_metrics = defaultdict(list)
+        for i, metrics in enumerate(env_metrics):
+            env_to_metrics[env_classes[i]].append(metrics)
+        for env_name, metrics in env_to_metrics.items():
+            # Aggregate metrics across all trajectories for the same environment
+            agg = aggregate_for_environment(env_name, metrics)
+            for key, value in agg.items():
+                rollout_metrics[f"environment/{key}"] = value
+
+    return rollout_metrics
+
+
+### util methods
+
+
+def _model_input_length(model_input: ModelInput) -> int:
+    """
+    Returns the total length of the model input in tokens.
+    """
+    total_length = 0
     for chunk in model_input.chunks:
         if isinstance(chunk, EncodedTextChunk):
-            tokens.extend(chunk.tokens)
-    return tokens
-
-
-def _flatten_all_tokens(chunks) -> List[int]:
-    """Flatten chunks to token IDs, using placeholder 0s for image expected_tokens."""
-    tokens: List[int] = []
-    for chunk in chunks:
-        if isinstance(chunk, EncodedTextChunk):
-            tokens.extend(chunk.tokens)
-        elif isinstance(chunk, ImageChunk) and chunk.expected_tokens is not None:
-            tokens.extend([0] * chunk.expected_tokens)
-    return tokens
+            total_length += len(chunk.tokens)
+        elif hasattr(chunk, "expected_tokens"):
+            total_length += chunk.expected_tokens
+    return total_length
 
 
 class SkyRLGymTinkerGenerator(GeneratorInterface):
@@ -104,7 +198,8 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
 
         if self.skyrl_gym_cfg.max_env_workers > 0:
             self.env_executor = ThreadPoolExecutor(
-                max_workers=self.skyrl_gym_cfg.max_env_workers, thread_name_prefix="skyrl-gym-env-"
+                max_workers=self.skyrl_gym_cfg.max_env_workers,
+                thread_name_prefix="skyrl-gym-env-",
             )
         else:
             self.env_executor = None
@@ -127,7 +222,7 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
         max_input_length: int,
         sampling_params: Optional[Dict[str, Any]] = None,
         trajectory_id: Optional[TrajectoryID] = None,
-    ) -> TrajectoryOutput:
+    ) -> AgentLoopState:
         """Append-only multi-turn generation loop using Tinker chunks.
 
         Builds the initial prompt once, then appends response tokens and
@@ -135,9 +230,7 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
 
         Flow per turn:
         1. ModelInput(running_chunks + suffix) → client.sample() → response tokens
-        2. Append suffix + response + <|im_end|> to running_chunks
-        3. renderer.parse_response(tokens) → text → env.step() → observations
-        4. renderer.render_message(obs) → chunks → append to running_chunks
+        2. renderer.parse_response(tokens) → text → env.step() → observations
         """
         # Init environment
         env_extras = dict(env_extras)
@@ -149,71 +242,57 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
 
         # Init conversation
         messages_raw, _ = await self._run_in_executor_if_available(env.init, copy.deepcopy(prompt))
-        messages: List[Message] = self._convert_conversation(messages_raw)
+        initial_messages: List[Message] = self._convert_conversation(messages_raw)
+        agent_loop_state = AgentLoopState(history=initial_messages)
 
-        # Build initial prompt ONCE and split off the generation suffix.
-        # The suffix (e.g. \n<|im_start|>assistant\n) is always the last chunk
-        # because Qwen3 has no BOS tokens and we don't use prefill.
-        model_input = self.renderer.build_generation_prompt(messages)
-        initial_prompt_tokens = _flatten_all_tokens(model_input.chunks[:-1])
-
-        all_initial_chunks = list(model_input.chunks)
-        suffix_chunk = all_initial_chunks[-1]
-        assert isinstance(suffix_chunk, EncodedTextChunk), (
-            f"Expected suffix to be EncodedTextChunk, got {type(suffix_chunk)}"
-        )
-        suffix_tokens = list(suffix_chunk.tokens)
-
-        # running_chunks holds the conversation WITHOUT the suffix.
-        # Before each sample() call we append the suffix temporarily.
-        running_chunks: List = list(all_initial_chunks[:-1])
-        running_token_count = _count_chunk_tokens(running_chunks)
-
-        # Stop token: vLLM excludes this from response token_ids, so we
-        # must append it explicitly to running_chunks after each response.
         stop_sequences = self.renderer.get_stop_sequences()
-        end_message_token: int = stop_sequences[0]
-
         # Build sampling params for the sample() call
-        sample_params = self._build_sample_params(sampling_params, max_tokens)
         if stop_sequences:
             sample_params["stop_token_ids"] = stop_sequences
+        sample_params = self._build_sample_params(sampling_params, max_tokens)
 
         get_logprobs = self.generator_cfg.sampling_params.logprobs is not None
 
         # State tracking
-        all_response_ids: List[int] = []
-        loss_mask: List[int] = []
-        rollout_logprobs: Optional[List[float]] = [] if get_logprobs else None
-        per_step_rewards: List[Tuple[float, Optional[int]]] = []
+        rollout_logprobs: Optional[List[float]] = [] if get_logprobs else None  # TODO (nithinc): impl
         stop_reason = "length"
         done = False
 
         while not done:
-            # Length check: running tokens + suffix tokens
-            if running_token_count + len(suffix_tokens) > max_input_length:
+            model_input = self.renderer.build_generation_prompt(agent_loop_state.history)
+            model_input_length = _model_input_length(model_input)
+            if model_input_length > max_input_length:
                 break
 
-            # Build model input = running_chunks + suffix
-            model_input = ModelInput(chunks=running_chunks + [suffix_chunk])
-
             # Sample from the model
-            sample_response = await self.client.sample({
-                "json": {
-                    "prompt": model_input.model_dump(),
-                    "num_samples": 1,
-                    "sampling_params": sample_params,
-                    "session_id": session_id,
+            sample_response = await self.client.sample(
+                {
+                    "json": {
+                        "prompt": model_input.model_dump(),
+                        "num_samples": 1,
+                        "sampling_params": sample_params,
+                        "session_id": session_id,
+                    }
                 }
-            })
+            )
 
             seq = sample_response["sequences"][0]
             response_tokens: List[int] = seq["tokens"]
-            response_logprobs: Optional[List[float]] = seq.get("logprobs")
+            response_logprobs: Optional[List[float]] = seq.get("logprobs")  # TODO also need to add prompt logprobs
             stop_reason = seq.get("stop_reason", "length")
+
+            action = TokensWithLogprobs(
+                tokens=response_tokens,
+                logprobs=response_logprobs,
+                stop_reason=stop_reason,
+            )
+            transition = Transition(observation=model_input, action=action)
+            agent_loop_state.transitions.append(transition)
 
             # Parse response tokens → Message
             assistant_message, _parse_ok = self.renderer.parse_response(response_tokens)
+            assert _parse_ok, "Failed to parse response"
+            agent_loop_state.history.append(assistant_message)
             response_text = get_text_content(assistant_message)
 
             # Environment step
@@ -221,89 +300,13 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
             step_reward: float = env_step_output["reward"]
             done = env_step_output["done"]
             new_obs = env_step_output["observations"]
-
-            # Track response tokens in all_response_ids (loss_mask=1)
-            response_end_idx = len(all_response_ids) + len(response_tokens) - 1
-            all_response_ids.extend(response_tokens)
-            loss_mask.extend([1] * len(response_tokens))
-            if rollout_logprobs is not None:
-                if response_logprobs:
-                    rollout_logprobs.extend(response_logprobs)
-                else:
-                    rollout_logprobs.extend([0.0] * len(response_tokens))
-
-            # Append to running_chunks:
-            # - suffix becomes the assistant header in conversation history
-            # - response tokens (the model's actual output)
-            # - <|im_end|> token (excluded by vLLM from response, must add explicitly)
-            running_chunks.append(EncodedTextChunk(tokens=suffix_tokens))
-            running_chunks.append(EncodedTextChunk(tokens=response_tokens))
-            running_chunks.append(EncodedTextChunk(tokens=[end_message_token]))
-            running_token_count += len(suffix_tokens) + len(response_tokens) + 1
-
-            # Always account for suffix + end_token in response_ids (loss_mask=0).
-            # These are always in running_chunks and must be tracked to keep
-            # prompt_ids + response_ids aligned with the model_input chunk count.
-            suffix_end_count = len(suffix_tokens) + 1
-            all_response_ids.extend([0] * suffix_end_count)
-            loss_mask.extend([0] * suffix_end_count)
-            if rollout_logprobs is not None:
-                rollout_logprobs.extend([0.0] * suffix_end_count)
-
-            # Keep messages list updated (needed for final training model_input)
-            messages.append(assistant_message)
-            obs_messages = self._convert_conversation(new_obs)
-            messages.extend(obs_messages)
-
-            # Render and append observation chunks
-            if not done and obs_messages:
-                obs_token_count = 0
-                for obs_msg in obs_messages:
-                    ctx = RenderContext(idx=1, is_last=False)
-                    rendered_obs = self.renderer.render_message(obs_msg, ctx)
-                    if rendered_obs.header:
-                        running_chunks.append(rendered_obs.header)
-                        obs_token_count += len(rendered_obs.header.tokens)
-                    for chunk in rendered_obs.output:
-                        if chunk:
-                            running_chunks.append(chunk)
-                            if isinstance(chunk, EncodedTextChunk):
-                                obs_token_count += len(chunk.tokens)
-                            elif isinstance(chunk, ImageChunk) and chunk.expected_tokens is not None:
-                                obs_token_count += chunk.expected_tokens
-
-                running_token_count += obs_token_count
-
-                # Observation token accounting for all_response_ids.
-                all_response_ids.extend([0] * obs_token_count)
-                loss_mask.extend([0] * obs_token_count)
-                if rollout_logprobs is not None:
-                    rollout_logprobs.extend([0.0] * obs_token_count)
-
-            per_step_rewards.append((step_reward, response_end_idx))
+            new_obs_messages: List[Message] = self._convert_conversation(new_obs)
+            agent_loop_state.history.extend(new_obs_messages)
 
         # Get final metrics and close env
         env_metrics = env.get_metrics()
         await self._run_in_executor_if_available(env.close)
-
-        # Build per-token rewards
-        reward_out = self._build_per_token_rewards(per_step_rewards, all_response_ids)
-
-        # Final model input (with images) for training rendering.
-        # Use running_chunks directly — they already contain ImageChunks and
-        # exclude the generation suffix, matching the actual conversation.
-        final_model_input = ModelInput(chunks=list(running_chunks))
-
-        return TrajectoryOutput(
-            response_ids=all_response_ids,
-            reward=reward_out,
-            stop_reason=stop_reason,
-            loss_mask=loss_mask,
-            prompt_ids=initial_prompt_tokens,
-            rollout_logprobs=rollout_logprobs,
-            env_metrics=env_metrics,
-            model_input=final_model_input,
-        )
+        return agent_loop_state
 
     # -- generate (batch orchestration) ----------------------------------------
 
@@ -334,13 +337,15 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
                 )
             )
 
-        all_outputs: List[TrajectoryOutput] = await tqdm.gather(
+        all_agent_loop_states: List[AgentLoopState] = await tqdm.gather(
             *tasks,
             desc="Generating Trajectories (Tinker)",
             miniters=max(1, len(tasks) // 10),
             mininterval=5,
             disable=disable_tqdm,
         )
+
+        return agent_loop_states_to_generator_output(all_agent_loop_states)
 
         responses = [output.response_ids for output in all_outputs]
         rewards = [output.reward for output in all_outputs]
@@ -357,28 +362,6 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
             rollout_logprobs = None
 
         rollout_metrics = get_rollout_metrics(responses, rewards, env_metrics, env_classes)
-
-        if self.generator_cfg.zero_reward_on_non_stop:
-            rewards = self._zero_reward_if_not_stop(rewards, stop_reasons)
-
-        if self.generator_cfg.apply_overlong_filtering:
-            loss_masks = apply_overlong_filtering(loss_masks, stop_reasons)
-
-        generator_output: GeneratorOutput = {
-            "prompt_token_ids": prompt_token_ids,
-            "response_ids": responses,
-            "rewards": rewards,
-            "loss_masks": loss_masks,
-            "stop_reasons": stop_reasons,
-            "rollout_metrics": rollout_metrics,
-            "rollout_logprobs": rollout_logprobs,
-            "trajectory_ids": None,
-            "rollout_expert_indices": None,
-            "is_last_step": None,
-            "model_inputs": model_inputs,
-        }
-
-        return generator_output
 
     # -- helpers ---------------------------------------------------------------
 
@@ -405,9 +388,7 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
             result.append(Message(role=m["role"], content=content))
         return result
 
-    def _build_sample_params(
-        self, override_params: Optional[Dict[str, Any]], max_tokens: int
-    ) -> Dict[str, Any]:
+    def _build_sample_params(self, override_params: Optional[Dict[str, Any]], max_tokens: int) -> Dict[str, Any]:
         """Build Tinker-format sampling params from config + overrides."""
         cfg = self.generator_cfg.sampling_params
         params: Dict[str, Any] = {
