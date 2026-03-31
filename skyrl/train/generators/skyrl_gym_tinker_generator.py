@@ -10,7 +10,7 @@ import asyncio
 import copy
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
 import numpy as np
@@ -28,9 +28,6 @@ from skyrl.train.generators.base import (
     GeneratorInterface,
     GeneratorOutput,
     TrajectoryID,
-)
-from skyrl.train.generators.utils import (
-    get_rollout_metrics,
 )
 from skyrl.train.renderers.base import (
     Message,
@@ -104,8 +101,6 @@ def agent_loop_states_to_generator_output(
 def get_rollout_metrics(
     responses: List[List[int]],
     rewards: Union[List[float], List[List[float]]],
-    env_metrics: Optional[List[Dict[str, Any]]] = None,
-    env_classes: Optional[List[str]] = None,
 ):
     """
     Computes rollout metrics including token statistics and optional environment-specific metrics.
@@ -145,16 +140,6 @@ def get_rollout_metrics(
         "generate/avg_tokens_non_zero_rewards": avg_tokens_non_zero_rewards.item(),
         "generate/avg_tokens_zero_rewards": avg_tokens_zero_rewards.item(),
     }
-
-    if env_metrics is not None and env_classes is not None:
-        env_to_metrics = defaultdict(list)
-        for i, metrics in enumerate(env_metrics):
-            env_to_metrics[env_classes[i]].append(metrics)
-        for env_name, metrics in env_to_metrics.items():
-            # Aggregate metrics across all trajectories for the same environment
-            agg = aggregate_for_environment(env_name, metrics)
-            for key, value in agg.items():
-                rollout_metrics[f"environment/{key}"] = value
 
     return rollout_metrics
 
@@ -247,14 +232,14 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
 
         stop_sequences = self.renderer.get_stop_sequences()
         # Build sampling params for the sample() call
+        sample_params = self._build_sample_params(sampling_params, max_tokens)
         if stop_sequences:
             sample_params["stop_token_ids"] = stop_sequences
-        sample_params = self._build_sample_params(sampling_params, max_tokens)
 
         get_logprobs = self.generator_cfg.sampling_params.logprobs is not None
 
         # State tracking
-        rollout_logprobs: Optional[List[float]] = [] if get_logprobs else None  # TODO (nithinc): impl
+        rollout_logprobs: Optional[List[float]] = [] if get_logprobs else None  # noqa
         stop_reason = "length"
         done = False
 
@@ -297,14 +282,13 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
 
             # Environment step
             env_step_output: BaseTextEnvStepOutput = await self._run_in_executor_if_available(env.step, response_text)
-            step_reward: float = env_step_output["reward"]
+            step_reward: float = env_step_output["reward"]  # noqa
             done = env_step_output["done"]
             new_obs = env_step_output["observations"]
             new_obs_messages: List[Message] = self._convert_conversation(new_obs)
             agent_loop_state.history.extend(new_obs_messages)
 
         # Get final metrics and close env
-        env_metrics = env.get_metrics()
         await self._run_in_executor_if_available(env.close)
         return agent_loop_state
 
@@ -345,23 +329,10 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
             disable=disable_tqdm,
         )
 
-        return agent_loop_states_to_generator_output(all_agent_loop_states)
-
-        responses = [output.response_ids for output in all_outputs]
-        rewards = [output.reward for output in all_outputs]
-        stop_reasons = [output.stop_reason for output in all_outputs]
-        loss_masks = [output.loss_mask for output in all_outputs]
-        prompt_token_ids = [output.prompt_ids for output in all_outputs]
-        env_metrics = [output.env_metrics for output in all_outputs]
-        model_inputs = [output.model_input for output in all_outputs]
-
-        get_logprobs = self.generator_cfg.sampling_params.logprobs is not None
-        if get_logprobs:
-            rollout_logprobs = [output.rollout_logprobs for output in all_outputs]
-        else:
-            rollout_logprobs = None
-
-        rollout_metrics = get_rollout_metrics(responses, rewards, env_metrics, env_classes)
+        output = agent_loop_states_to_generator_output(all_agent_loop_states)
+        rollout_metrics = get_rollout_metrics(output.response_ids, output.rewards)
+        output.rollout_metrics = rollout_metrics
+        return output
 
     # -- helpers ---------------------------------------------------------------
 
@@ -405,31 +376,3 @@ class SkyRLGymTinkerGenerator(GeneratorInterface):
             params.update(override_params)
 
         return params
-
-    def _build_per_token_rewards(
-        self,
-        per_step_rewards: List[Tuple[float, Optional[int]]],
-        response_ids: List[int],
-    ) -> Union[float, List[float]]:
-        """Build per-token rewards placed at assistant turn boundaries."""
-        token_level_rewards: List[float] = [0.0] * len(response_ids)
-        for step_reward, idx in per_step_rewards:
-            if idx is not None and idx < len(response_ids):
-                token_level_rewards[idx] += step_reward
-        return token_level_rewards
-
-    @staticmethod
-    def _zero_reward_if_not_stop(
-        rewards: List[Union[float, List[float]]], stop_reasons: List[str]
-    ) -> List[Union[float, List[float]]]:
-        """Zero out rewards for trajectories that didn't stop normally."""
-        result = []
-        for reward, stop_reason in zip(rewards, stop_reasons):
-            if stop_reason != "stop":
-                if isinstance(reward, list):
-                    result.append([0.0] * len(reward))
-                else:
-                    result.append(0.0)
-            else:
-                result.append(reward)
-        return result
