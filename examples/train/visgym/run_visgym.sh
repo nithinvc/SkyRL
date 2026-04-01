@@ -23,7 +23,7 @@ uv run --isolated --extra fsdp \
   python examples/train/visgym/visgym_entrypoint.py \
   data.train_data="['$DATA_DIR/train.parquet']" \
   trainer.algorithm.advantage_estimator="grpo" \
-  trainer.policy.model.path="Qwen/Qwen3-VL-8B-Thinking" \
+  trainer.policy.model.path="Qwen/Qwen3-VL-4B-Thinking" \
   trainer.placement.colocate_all=false \
   trainer.placement.colocate_policy_ref=true \
   trainer.strategy=fsdp2 \
