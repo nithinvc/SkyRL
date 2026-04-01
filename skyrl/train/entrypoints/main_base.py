@@ -220,9 +220,24 @@ class BasePPOExp:
     def get_generator(self, cfg, tokenizer, inference_engine_client):
         """Initializes the generator.
 
+        Returns SkyRLVLMGymGenerator when ``cfg.generator.is_vlm`` is True,
+        otherwise SkyRLGymGenerator.
+
         Returns:
             GeneratorInterface: The generator.
         """
+        if cfg.generator.is_vlm:
+            from skyrl.train.generators.skyrl_vlm_gym_generator import (
+                SkyRLVLMGymGenerator,
+            )
+
+            return SkyRLVLMGymGenerator(
+                generator_cfg=cfg.generator,
+                skyrl_gym_cfg=cfg.environment.skyrl_gym,
+                inference_engine_client=inference_engine_client,
+                tokenizer=tokenizer,
+            )
+
         from skyrl.train.generators.skyrl_gym_generator import SkyRLGymGenerator
 
         return SkyRLGymGenerator(
@@ -230,52 +245,6 @@ class BasePPOExp:
             skyrl_gym_cfg=cfg.environment.skyrl_gym,
             inference_engine_client=inference_engine_client,
             tokenizer=tokenizer,
-        )
-
-    def get_tinker_generator(self, cfg, client, tokenizer):
-        """Initializes a TinkerGenerator for multi-modal multi-turn RL.
-
-        Uses a Renderer to handle chat template + image encoding, and
-        RemoteInferenceClient.sample() for generation.
-
-        Args:
-            cfg: SkyRLTrainConfig
-            client: RemoteInferenceClient
-            tokenizer: HuggingFace tokenizer
-
-        Returns:
-            GeneratorInterface: The TinkerGenerator.
-        """
-        from skyrl.train.generators.skyrl_gym_tinker_generator import SkyRLGymTinkerGenerator
-        from skyrl.train.renderers.image_utils import get_image_processor
-        from skyrl.train.renderers.qwen3 import Qwen3Renderer, Qwen3VLRenderer
-
-        model_path = cfg.trainer.policy.model.path
-
-        # Detect VLM by checking for vision_config in the model config
-        from transformers import AutoConfig
-
-        model_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-        is_vlm = hasattr(model_config, "vision_config") and model_config.vision_config is not None
-
-        if is_vlm:
-            image_processor = get_image_processor(model_path)
-            renderer = Qwen3VLRenderer(
-                tokenizer=tokenizer,
-                image_processor=image_processor,
-                strip_thinking_from_history=False,
-            )
-        else:
-            renderer = Qwen3Renderer(
-                tokenizer=tokenizer,
-                strip_thinking_from_history=False,
-            )
-
-        return SkyRLGymTinkerGenerator(
-            generator_cfg=cfg.generator,
-            skyrl_gym_cfg=cfg.environment.skyrl_gym,
-            client=client,
-            renderer=renderer,
         )
 
     def get_trainer(
