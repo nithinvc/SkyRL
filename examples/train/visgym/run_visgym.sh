@@ -14,16 +14,25 @@ set -x
 #   bash examples/train/visgym/run_visgym.sh
 
 : "${DATA_DIR:="$HOME/data/visgym"}"
-: "${NUM_INFERENCE_GPUS:=6}"
-: "${NUM_TRAIN_GPUS:=2}"
+: "${NUM_INFERENCE_GPUS:=4}"
+: "${NUM_TRAIN_GPUS:=4}"
 : "${LOGGER:=console}"
 
+# Trajectory / rollout export (all under trainer.export_path):
+# - Training: set DUMP_TRAINING_BATCHES=true → dumped_data/global_step_<N>_training_input.pkl (pickled TrainingInputBatch).
+# - Eval: set EVAL_INTERVAL>0 and DUMP_EVAL_RESULTS=true → dumped_evals/global_step_<N>_evals/*.jsonl (prompt/response/reward/env_extras).
+: "${EXPORT_PATH:="$HOME/exports/visgym_maze2d"}"
+: "${DUMP_TRAINING_BATCHES:=false}"
+: "${DUMP_EVAL_RESULTS:=true}"
+: "${EVAL_INTERVAL:=1}"
+
+MODEL_PATH="/home/ray/models/visgym_model/mixed_qwen3vl"
 _SKYRL_USE_NEW_INFERENCE=1 \
 uv run --isolated --extra fsdp \
   python examples/train/visgym/visgym_entrypoint.py \
   data.train_data="['$DATA_DIR/train.parquet']" \
   trainer.algorithm.advantage_estimator="grpo" \
-  trainer.policy.model.path="Qwen/Qwen3-VL-4B-Thinking" \
+  trainer.policy.model.path="$MODEL_PATH" \
   trainer.placement.colocate_all=false \
   trainer.placement.colocate_policy_ref=true \
   trainer.strategy=fsdp2 \
@@ -42,9 +51,9 @@ uv run --isolated --extra fsdp \
   trainer.micro_train_batch_size_per_gpu=4 \
   trainer.update_epochs_per_batch=1 \
   trainer.max_prompt_length=2048 \
-  generator.sampling_params.max_generate_length=4096 \
+  generator.sampling_params.max_generate_length=128 \
   generator.sampling_params.temperature=1.0 \
-  generator.max_turns=32 \
+  generator.max_turns=24 \
   generator.max_input_length=4096 \
   generator.n_samples_per_prompt=16 \
   generator.is_vlm=true \
@@ -57,8 +66,11 @@ uv run --isolated --extra fsdp \
   trainer.run_name="visgym_maze2d_dev" \
   trainer.resume_mode=null \
   trainer.log_path="/tmp/skyrl-logs" \
+  trainer.export_path="$EXPORT_PATH" \
+  trainer.dump_data_batch="$DUMP_TRAINING_BATCHES" \
+  trainer.dump_eval_results="$DUMP_EVAL_RESULTS" \
   trainer.ckpt_path="$HOME/ckpts/visgym_maze2d_dev" \
   trainer.use_sample_packing=false \
-  trainer.eval_interval=-1 \
+  trainer.eval_interval="$EVAL_INTERVAL" \
   trainer.ckpt_interval=-1 \
   "$@"
