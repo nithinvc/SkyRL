@@ -612,9 +612,6 @@ class RayPPOTrainer:
         rollout_expert_indices: Optional[List[List[List[List[int]]]]] = generator_output.get(
             "rollout_expert_indices", None
         )
-        # TODO Update pixel value extraction logic
-        pixel_values = None
-        image_grid_thw = None
 
         (
             sequences_tensor,
@@ -659,9 +656,15 @@ class RayPPOTrainer:
                 else None
             ),
         }
+        pixel_values = generator_output.get("pixel_values", None)
+        image_grid_thw = generator_output.get("image_grid_thw", None)
         if pixel_values is not None:
-            batch_dict["pixel_values"] = pixel_values
-            batch_dict["image_grid_thw"] = image_grid_thw
+            assert len(pixel_values) == len(
+                image_grid_thw
+            ), "Number of pixel values should match number of image grid thw"
+            batch_dict["pixel_values"] = TensorList(pixel_values)
+            batch_dict["image_grid_thw"] = TensorList(image_grid_thw)
+
         training_input = TrainingInputBatch(batch_dict)
         training_input.metadata = {"uids": uids}
         # padded response length
