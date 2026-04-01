@@ -259,10 +259,7 @@ class RayPPOTrainer:
 
                     # 3. Convert GeneratorOutput to TrainingInputBatch
                     with Timer("convert_to_training_input", self.all_timings):
-                        training_input: TrainingInputBatch = self.convert_to_training_input(
-                            generator_output,
-                            uids,
-                        )
+                        training_input: TrainingInputBatch = self.convert_to_training_input(generator_output, uids)
 
                     # 4. Inference and calculate values, log probs, rewards, kl divergence
                     with Timer("fwd_logprobs_values_reward", self.all_timings):
@@ -604,57 +601,13 @@ class RayPPOTrainer:
             self.cfg.generator.inference_engine,
         )
 
-    def tinker_convert_to_training_input(
-        self,
-        rendered,
-        original_response_ids: List[List[int]],
-    ) -> tuple[list[list[int]], TensorList | None, TensorList | None]:
-        """Extract response_ids and vision tensors from rendered model inputs.
-
-        Args:
-            rendered: RenderedModelInputs from vllm_renderer.render_async().
-            original_response_ids: response_ids from the generator, used to
-                assert length consistency with the rendered token sequences.
-
-        Returns:
-            (response_ids, pixel_values, image_grid_thw)
-        """
-        from skyrl.backends.renderer import decode_mm_kwargs
-
-        response_ids = [r.prompt_ids for r in rendered]
-
-        for i, (new, orig) in enumerate(zip(response_ids, original_response_ids)):
-            assert len(new) == len(orig), (
-                f"Sample {i}: rendered response length {len(new)} != " f"generator response length {len(orig)}"
-            )
-
-        has_vision = any(r.multi_modal_kwargs for r in rendered)
-        if not has_vision:
-            return response_ids, None, None
-
-        pixel_values_list: list[torch.Tensor] = []
-        image_grid_thw_list: list[torch.Tensor] = []
-        for r in rendered:
-            pv, thw = decode_mm_kwargs(r)
-            pixel_values_list.append(pv)
-            image_grid_thw_list.append(thw)
-
-        return response_ids, TensorList(pixel_values_list), TensorList(image_grid_thw_list)
-
     def convert_to_training_input(
         self,
         generator_output: GeneratorOutput,
         uids: List[str],
         rendered: None = None,
     ) -> TrainingInputBatch:
-        """Converts lists to a padded batch of tensors for training.
-
-        Args:
-            rendered: Optional list of RenderedModelInputs from vllm_renderer.
-                When provided together with model_inputs in generator_output,
-                tinker_convert_to_training_input is used to extract response_ids
-                with real image placeholder tokens and vision tensors.
-        """
+        """Converts lists to a padded batch of tensors for training"""
         prompt_ids: List[List[int]] = generator_output["prompt_token_ids"]
         response_ids: List[List[int]] = generator_output["response_ids"]
         rewards: List[List[float]] = generator_output["rewards"]
@@ -959,7 +912,6 @@ class RayPPOTrainer:
         training_input.metadata["pad_size"] = pad_size
         if pad_size == 0:
             return training_input
-        from skyrl.backends.skyrl_train.training_batch import TensorList
 
         for key, tensor in training_input.items():
             if tensor is not None:

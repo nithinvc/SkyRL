@@ -121,7 +121,6 @@ class SkyRLTrainBackend(AbstractBackend):
         self._tokenizer: AutoTokenizer = get_tokenizer(self.base_model)
         self._inference_engine_client = None
         self._inference_engines_initialized = False
-        self._renderer = render_model_input
 
     def has_model(self, model_id: str) -> bool:
         return self._model_id == model_id
