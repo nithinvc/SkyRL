@@ -42,7 +42,6 @@ from skyrl.backends.skyrl_train.workers.worker import PPORayActorGroup
 from skyrl.backends.skyrl_train.workers.worker_dispatch import WorkerDispatch
 from skyrl.backends.skyrl_train.workers.worker_utils import reduce_metrics
 from skyrl.env_vars import SKYRL_RAY_PG_TIMEOUT_IN_S
-from skyrl.tinker import types
 from skyrl.train.config import SkyRLTrainConfig
 from skyrl.train.dataset import PromptDataset
 from skyrl.train.dataset.preprocess import (
@@ -91,7 +90,6 @@ class RayPPOTrainer:
         generator: GeneratorInterface,
         colocate_pg: Optional[ResolvedPlacementGroup] = None,
         eval_dataset: Optional[PromptDataset] = None,
-        vllm_renderer=None,
     ):
         self.cfg = cfg
         self.colocate_all = cfg.trainer.placement.colocate_all
@@ -101,7 +99,6 @@ class RayPPOTrainer:
         self.eval_dataset = eval_dataset
         self.inference_engine_client = inference_engine_client
         self.generator = generator
-        self.vllm_renderer = vllm_renderer
         self.train_dataloader = None
         self.total_training_steps = None
         self._build_train_dataloader_and_compute_training_steps()
@@ -262,14 +259,9 @@ class RayPPOTrainer:
 
                     # 3. Convert GeneratorOutput to TrainingInputBatch
                     with Timer("convert_to_training_input", self.all_timings):
-                        model_inputs = generator_output.get("model_inputs")
-                        rendered = None
-                        if model_inputs and self.vllm_renderer:
-                            rendered = await self.vllm_renderer.render_async(model_inputs)
                         training_input: TrainingInputBatch = self.convert_to_training_input(
                             generator_output,
                             uids,
-                            rendered=rendered,
                         )
 
                     # 4. Inference and calculate values, log probs, rewards, kl divergence
@@ -614,7 +606,7 @@ class RayPPOTrainer:
 
     def tinker_convert_to_training_input(
         self,
-        rendered: list[types.RenderedModelInput],
+        rendered,
         original_response_ids: List[List[int]],
     ) -> tuple[list[list[int]], TensorList | None, TensorList | None]:
         """Extract response_ids and vision tensors from rendered model inputs.
@@ -653,7 +645,7 @@ class RayPPOTrainer:
         self,
         generator_output: GeneratorOutput,
         uids: List[str],
-        rendered: Optional[list[types.RenderedModelInput]] = None,
+        rendered: None = None,
     ) -> TrainingInputBatch:
         """Converts lists to a padded batch of tensors for training.
 
