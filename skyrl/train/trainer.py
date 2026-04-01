@@ -601,12 +601,7 @@ class RayPPOTrainer:
             self.cfg.generator.inference_engine,
         )
 
-    def convert_to_training_input(
-        self,
-        generator_output: GeneratorOutput,
-        uids: List[str],
-        rendered: None = None,
-    ) -> TrainingInputBatch:
+    def convert_to_training_input(self, generator_output: GeneratorOutput, uids: List[str]) -> TrainingInputBatch:
         """Converts lists to a padded batch of tensors for training"""
         prompt_ids: List[List[int]] = generator_output["prompt_token_ids"]
         response_ids: List[List[int]] = generator_output["response_ids"]
@@ -617,13 +612,9 @@ class RayPPOTrainer:
         rollout_expert_indices: Optional[List[List[List[List[int]]]]] = generator_output.get(
             "rollout_expert_indices", None
         )
+        # TODO Update pixel value extraction logic
         pixel_values = None
         image_grid_thw = None
-        if rendered is not None:
-            response_ids, pixel_values, image_grid_thw = self.tinker_convert_to_training_input(
-                rendered,
-                response_ids,
-            )
 
         (
             sequences_tensor,
