@@ -796,6 +796,8 @@ class SkyRLGymGenerator(GeneratorInterface):
                     out_trajectory_ids.append(trajectory_ids[i])
                     out_env_classes.append(env_classes[i])
             env_classes = out_env_classes
+            pixel_values = None
+            image_grid_thw = None
         else:
             responses = [output.response_ids for output in all_outputs]
             rewards = [output.reward for output in all_outputs]
@@ -806,10 +808,10 @@ class SkyRLGymGenerator(GeneratorInterface):
             is_last_step = None
             out_trajectory_ids = None
 
-        # Collect vision tensors if any trajectory produced them (VLM generators)
-        has_pixel_values = any(output.pixel_values is not None for output in all_outputs)
-        pixel_values = [output.pixel_values for output in all_outputs] if has_pixel_values else None
-        image_grid_thw = [output.image_grid_thw for output in all_outputs] if has_pixel_values else None
+            # Collect vision tensors if any trajectory produced them (VLM generators)
+            has_pixel_values = any(output.pixel_values is not None for output in all_outputs)
+            pixel_values = [output.pixel_values for output in all_outputs] if has_pixel_values else None
+            image_grid_thw = [output.image_grid_thw for output in all_outputs] if has_pixel_values else None
 
         if sampling_params is not None:
             # sampling params will be a dict in the format of the inference engine backend

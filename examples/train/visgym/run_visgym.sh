@@ -47,6 +47,7 @@ uv run --isolated --extra fsdp \
   generator.max_turns=48 \
   generator.max_input_length=4096 \
   generator.n_samples_per_prompt=4 \
+  generator.is_vlm=true \
   generator.batched=false \
   trainer.algorithm.use_kl_loss=true \
   trainer.policy.optimizer_config.lr=1.0e-6 \

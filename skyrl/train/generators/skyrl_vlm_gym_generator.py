@@ -97,13 +97,13 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
         self,
         generator_cfg: GeneratorConfig,
         skyrl_gym_cfg: SkyRLGymConfig,
-        inference_client: RemoteInferenceClient,
+        inference_engine_client: RemoteInferenceClient,
         tokenizer,
     ):
         # Parent stores as self.inference_engine_client and sets up
         # generator_cfg, skyrl_gym_cfg, tokenizer, max_turns, env_executor, etc.
-        super().__init__(generator_cfg, skyrl_gym_cfg, inference_client, tokenizer)
-        self.inference_client = inference_client
+        super().__init__(generator_cfg, skyrl_gym_cfg, inference_engine_client, tokenizer)
+        self.inference_client = inference_engine_client
         logger.info("Initialized SkyRLVLMGymGenerator (VLM multi-modal generator)")
 
     def _validate_cfg(self, generator_cfg: GeneratorConfig):
