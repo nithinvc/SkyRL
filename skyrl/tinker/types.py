@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import Base64Bytes, BaseModel, Discriminator
@@ -130,7 +130,7 @@ class MultiModalPlaceholder(BaseModel):
 
 class RenderedModelInput(BaseModel):
     prompt_ids: list[int]
-    multi_modal_kwargs: dict[str, bytes] | None = None
+    multi_modal_kwargs: dict[str, Any] | None = None
     multi_modal_placeholders: list[MultiModalPlaceholder] | None = None
 
 

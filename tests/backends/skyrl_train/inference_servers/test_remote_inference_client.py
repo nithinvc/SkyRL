@@ -55,7 +55,7 @@ def create_mock_vllm_server(server_id: int) -> FastAPI:
         else:
             num_choices = 1
 
-        return {
+        resp = {
             "choices": [
                 {
                     "request_id": "dummy",
@@ -66,6 +66,16 @@ def create_mock_vllm_server(server_id: int) -> FastAPI:
                 for i in range(num_choices)
             ]
         }
+
+        # Return prompt logprobs when requested (mirrors vLLM behaviour)
+        if "prompt_logprobs" in sp:
+            token_ids = body.get("token_ids", [])
+            resp["prompt_logprobs"] = [None] + [
+                {str(tid): {"logprob": -0.5 * (idx + 1), "rank": 1, "decoded_token": None}}
+                for idx, tid in enumerate(token_ids[1:])
+            ]
+
+        return resp
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request):
@@ -475,6 +485,39 @@ class TestSample:
         assert result["sequences"][1]["tokens"] == [1, 2, 3]
         assert result["sequences"][0]["logprobs"] == [-0.1]
         assert result["sequences"][1]["logprobs"] == [-0.2]
+
+    @pytest.mark.asyncio
+    async def test_sample_with_prompt_logprobs(self, client):
+        """Test sample with include_prompt_logprobs returns flat list skipping position 0."""
+        prompt_tokens = [10, 20, 30]
+        request_payload = {
+            "json": {
+                "prompt": {"chunks": [{"tokens": prompt_tokens}]},
+                "num_samples": 1,
+                "sampling_params": {"temperature": 0.7, "max_tokens": 64},
+                "include_prompt_logprobs": True,
+            }
+        }
+        result = await client.sample(request_payload)
+
+        assert result["type"] == "sample"
+        # prompt_length=3 → 2 floats (positions 1 and 2)
+        assert result["prompt_logprobs"] == [-0.5, -1.0]
+        assert len(result["sequences"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_sample_without_prompt_logprobs(self, client):
+        """Test sample without include_prompt_logprobs returns None (default)."""
+        request_payload = {
+            "json": {
+                "prompt": {"chunks": [{"tokens": [10, 20, 30]}]},
+                "num_samples": 1,
+                "sampling_params": {"temperature": 0.7, "max_tokens": 64},
+            }
+        }
+        result = await client.sample(request_payload)
+
+        assert result["prompt_logprobs"] is None
 
 
 class TestRenderChatCompletion:
