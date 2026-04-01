@@ -173,11 +173,27 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
         done = False
 
         # ── Main loop ─────────────────────────────────────────────────
+        # To avoid a second render call per turn, we defer obs-token
+        # extraction: after appending obs we just record the slice offset,
+        # then compute the actual obs tokens from the *next* turn's render
+        # (which produces identical token_ids since the conversation hasn't
+        # changed in between).
+        pending_obs_offset: Optional[int] = None
+
         while not done:
             # 1. Render full conversation for this turn's generation input
             rendered_conversation = await self._render_conversation(conversation)
             input_ids = rendered_conversation["prompt_ids"]
             latest_features = rendered_conversation["features"]
+
+            # 1b. Flush pending obs tokens from the previous turn
+            if pending_obs_offset is not None:
+                obs_tokens = input_ids[pending_obs_offset:]
+                response_ids.extend(obs_tokens)
+                loss_mask.extend([0] * len(obs_tokens))
+                if rollout_logprobs is not None:
+                    rollout_logprobs.extend([0.0] * len(obs_tokens))
+                pending_obs_offset = None
 
             if len(input_ids) > max_input_length:
                 stop_reason = "length"
@@ -214,20 +230,10 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
 
             per_step_rewards.append((step_reward, len(response_ids) - 1))
 
-            # 6. If episode continues, track observation tokens (loss_mask=0)
+            # 6. If episode continues, defer obs token extraction to next render
             if not done:
                 conversation.extend(new_obs)
-
-                # Render delta: re-render full conversation, slice off the new obs tokens
-                obs_render = await self._render_conversation(conversation)
-                full_ids = obs_render["prompt_ids"]
-                latest_features = obs_render["features"]
-                obs_tokens = full_ids[len(input_ids) + len(gen_ids) :]
-
-                response_ids.extend(obs_tokens)
-                loss_mask.extend([0] * len(obs_tokens))
-                if rollout_logprobs is not None:
-                    rollout_logprobs.extend([0.0] * len(obs_tokens))
+                pending_obs_offset = len(input_ids) + len(gen_ids)
 
         # ── Build per-token rewards ───────────────────────────────────
         per_token_reward: List[float] = [0.0] * len(response_ids)
