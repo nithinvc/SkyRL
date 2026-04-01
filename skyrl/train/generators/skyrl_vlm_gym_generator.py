@@ -6,11 +6,14 @@ from VisGym environments. Uses pure Python types (OpenAI-format messages
 with base64-encoded images) rather than Tinker chunks.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TypedDict
 
 from loguru import logger
 
-from skyrl.backends.skyrl_train.inference_engines.base import ConversationType
+from skyrl.backends.skyrl_train.inference_engines.base import (
+    ConversationType,
+    MultiModalFeatures,
+)
 from skyrl.backends.skyrl_train.inference_engines.inference_engine_client import (
     InferenceEngineClient,
 )
@@ -20,6 +23,11 @@ from skyrl.train.generators.skyrl_gym_generator import (
     SkyRLGymGenerator,
     TrajectoryOutput,
 )
+
+
+class RenderedConversation(TypedDict):
+    prompt_ids: list[int]
+    features: MultiModalFeatures
 
 
 class SkyRLVLMGymGenerator(SkyRLGymGenerator):
@@ -55,6 +63,14 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
                 "SkyRLVLMGymGenerator requires `use_conversation_multi_turn=True` "
                 "because multi-modal observations must be in separate user messages."
             )
+
+    def _render_conversation(self, conversation: ConversationType) -> RenderedConversation:
+        rendered_conversation = self.inference_engine_client.render_chat_completion(
+            {"json": {"model": self.model_name, "messages": conversation}}
+        )
+        return RenderedConversation(
+            prompt_ids=rendered_conversation["token_ids"], features=rendered_conversation["features"]
+        )
 
     async def agent_loop(
         self,
