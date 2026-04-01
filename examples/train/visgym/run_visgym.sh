@@ -14,8 +14,8 @@ set -x
 #   bash examples/train/visgym/run_visgym.sh
 
 : "${DATA_DIR:="$HOME/data/visgym"}"
-: "${NUM_INFERENCE_GPUS:=4}"
-: "${NUM_TRAIN_GPUS:=4}"
+: "${NUM_INFERENCE_GPUS:=6}"
+: "${NUM_TRAIN_GPUS:=2}"
 : "${LOGGER:=console}"
 
 _SKYRL_USE_NEW_INFERENCE=1 \
@@ -23,7 +23,7 @@ uv run --isolated --extra fsdp \
   python examples/train/visgym/visgym_entrypoint.py \
   data.train_data="['$DATA_DIR/train.parquet']" \
   trainer.algorithm.advantage_estimator="grpo" \
-  trainer.policy.model.path="Qwen/Qwen3-VL-4B-Thinking" \
+  trainer.policy.model.path="Qwen/Qwen3-VL-8B-Thinking" \
   trainer.placement.colocate_all=false \
   trainer.placement.colocate_policy_ref=true \
   trainer.strategy=fsdp2 \
@@ -36,17 +36,17 @@ uv run --isolated --extra fsdp \
   generator.inference_engine.async_engine=true \
   generator.inference_engine.engine_init_kwargs.max_model_len=60000 \
   trainer.epochs=3 \
-  trainer.train_batch_size=16 \
-  trainer.policy_mini_batch_size=16 \
-  trainer.micro_forward_batch_size_per_gpu=4 \
+  trainer.train_batch_size=32 \
+  trainer.policy_mini_batch_size=32 \
+  trainer.micro_forward_batch_size_per_gpu=8 \
   trainer.micro_train_batch_size_per_gpu=4 \
   trainer.update_epochs_per_batch=1 \
   trainer.max_prompt_length=2048 \
   generator.sampling_params.max_generate_length=4096 \
   generator.sampling_params.temperature=1.0 \
-  generator.max_turns=48 \
+  generator.max_turns=32 \
   generator.max_input_length=4096 \
-  generator.n_samples_per_prompt=4 \
+  generator.n_samples_per_prompt=16 \
   generator.is_vlm=true \
   generator.batched=false \
   trainer.algorithm.use_kl_loss=true \
