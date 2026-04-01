@@ -17,6 +17,7 @@ from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 from uuid import uuid4
 
+import torch
 from loguru import logger
 
 import skyrl_gym
@@ -39,6 +40,44 @@ from skyrl.train.generators.skyrl_gym_generator import (
 class RenderedConversation(TypedDict):
     prompt_ids: list[int]
     features: MultiModalFeatures
+
+
+def deserialize_mm_features(features: dict) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Deserialize multimodal features from a render_chat_completion response.
+
+    Decodes base64-encoded vision tensors from the ``kwargs_data`` field
+    returned by vLLM's ``/v1/chat/completions/render`` endpoint.
+
+    Args:
+        features: The ``features`` dict from a render response.
+
+    Returns:
+        ``(pixel_values, image_grid_thw)`` — concatenated across all images.
+        Returns empty tensors when no vision data is present.
+    """
+    kwargs_data = (features or {}).get("kwargs_data")
+    if not kwargs_data or "image" not in kwargs_data:
+        return torch.empty(0), torch.empty(0, 3, dtype=torch.long)
+
+    from vllm.entrypoints.serve.disagg.mm_serde import (
+        decode_mm_kwargs_item as _vllm_decode,
+    )
+
+    pv_parts: list[torch.Tensor] = []
+    thw_parts: list[torch.Tensor] = []
+    for b64_str in kwargs_data["image"]:
+        if b64_str is None:
+            continue  # cached item — tensor data not included
+        item = _vllm_decode(b64_str)
+        data = item.get_data()
+        if "pixel_values" in data and isinstance(data["pixel_values"], torch.Tensor):
+            pv_parts.append(data["pixel_values"])
+        if "image_grid_thw" in data and isinstance(data["image_grid_thw"], torch.Tensor):
+            thw_parts.append(data["image_grid_thw"])
+
+    pixel_values = torch.cat(pv_parts, dim=0) if pv_parts else torch.empty(0)
+    image_grid_thw = torch.cat(thw_parts, dim=0) if thw_parts else torch.empty(0, 3, dtype=torch.long)
+    return pixel_values, image_grid_thw
 
 
 class SkyRLVLMGymGenerator(SkyRLGymGenerator):
@@ -114,7 +153,11 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
         conversation, _ = await self._run_in_executor_if_available(env.init, conversation)
 
         # Render initial conversation → prompt_ids
-        prompt_ids = (await self._render_conversation(conversation)).prompt_ids
+        # latest_features always points to the most recent render's features
+        # (each render covers the full conversation, so later renders supersede earlier ones)
+        initial_render = await self._render_conversation(conversation)
+        prompt_ids = initial_render["prompt_ids"]
+        latest_features = initial_render["features"]
 
         current_sampling_params: dict = (
             sampling_params if sampling_params is not None else asdict(self.generator_cfg.sampling_params)
@@ -133,8 +176,8 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
         while not done:
             # 1. Render full conversation for this turn's generation input
             rendered_conversation = await self._render_conversation(conversation)
-            input_ids = rendered_conversation.prompt_ids
-            features = rendered_conversation.features
+            input_ids = rendered_conversation["prompt_ids"]
+            latest_features = rendered_conversation["features"]
 
             if len(input_ids) > max_input_length:
                 stop_reason = "length"
@@ -145,7 +188,7 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
                 prompt_token_ids=[input_ids],
                 session_ids=[session_id],
                 sampling_params=current_sampling_params,
-                mm_features=features,
+                mm_features=latest_features,
             )
             engine_output = await self.inference_client.generate(engine_input)
 
@@ -176,8 +219,9 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
                 conversation.extend(new_obs)
 
                 # Render delta: re-render full conversation, slice off the new obs tokens
-                # TODO (nithinc): this is a second call to the server that should get optimized
-                full_ids = (await self._render_conversation(conversation)).prompt_ids
+                obs_render = await self._render_conversation(conversation)
+                full_ids = obs_render["prompt_ids"]
+                latest_features = obs_render["features"]
                 obs_tokens = full_ids[len(input_ids) + len(gen_ids) :]
 
                 response_ids.extend(obs_tokens)
@@ -189,6 +233,9 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
         per_token_reward: List[float] = [0.0] * len(response_ids)
         for reward, idx in per_step_rewards:
             per_token_reward[idx] = float(reward)
+
+        # ── Deserialize vision tensors from the most recent render ────
+        pixel_values, image_grid_thw = deserialize_mm_features(latest_features)
 
         # ── Cleanup ───────────────────────────────────────────────────
         env_metrics = env.get_metrics()
@@ -202,6 +249,8 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
             prompt_ids=prompt_ids,
             rollout_logprobs=rollout_logprobs,
             env_metrics=env_metrics,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
         )
 
     async def generate_batched(self, *args, **kwargs) -> GeneratorOutput:

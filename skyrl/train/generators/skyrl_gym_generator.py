@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 from uuid import uuid4
 
+import torch
 from loguru import logger
 from tqdm.asyncio import tqdm
 
@@ -51,6 +52,8 @@ class TrajectoryOutput:
     rollout_logprobs: Optional[List[float]]
     env_metrics: Dict[str, Any]
     rollout_expert_indices: Optional[List[List[List[int]]]] = None
+    pixel_values: Optional[torch.Tensor] = None
+    image_grid_thw: Optional[torch.Tensor] = None
 
 
 @dataclass
@@ -803,6 +806,11 @@ class SkyRLGymGenerator(GeneratorInterface):
             is_last_step = None
             out_trajectory_ids = None
 
+        # Collect vision tensors if any trajectory produced them (VLM generators)
+        has_pixel_values = any(output.pixel_values is not None for output in all_outputs)
+        pixel_values = [output.pixel_values for output in all_outputs] if has_pixel_values else None
+        image_grid_thw = [output.image_grid_thw for output in all_outputs] if has_pixel_values else None
+
         if sampling_params is not None:
             # sampling params will be a dict in the format of the inference engine backend
             get_logprobs = sampling_params.get("logprobs", None) is not None
@@ -846,6 +854,8 @@ class SkyRLGymGenerator(GeneratorInterface):
             "trajectory_ids": out_trajectory_ids,
             "rollout_expert_indices": rollout_expert_indices,
             "is_last_step": is_last_step,
+            "pixel_values": pixel_values,
+            "image_grid_thw": image_grid_thw,
         }
 
         return generator_output
