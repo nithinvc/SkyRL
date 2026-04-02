@@ -266,6 +266,7 @@ class RemoteInferenceClient:
             raise ValueError("n > 1 is not supported. Use `config.generator.n_samples_per_prompt` instead.")
 
         session_ids = input_batch.get("session_ids")
+        mm_features = input_batch.get("mm_features")
         get_logprobs = sampling_params.get("logprobs") is not None
 
         # Two semaphores decouple the generate and detokenize stages:
@@ -288,12 +289,14 @@ class RemoteInferenceClient:
                     prompt_token_ids=prompt_token_ids[idx],
                     sampling_params=sampling_params,
                     session_id=session_ids[idx] if session_ids and idx < len(session_ids) else None,
+                    mm_features=mm_features,
                 )
             async with gen_sem:
                 return await self._generate_single(
                     prompt_token_ids=prompt_token_ids[idx],
                     sampling_params=sampling_params,
                     session_id=session_ids[idx] if session_ids and idx < len(session_ids) else None,
+                    mm_features=mm_features,
                 )
 
         async def _throttled_detokenize(token_ids: List[int]) -> str:
@@ -317,6 +320,7 @@ class RemoteInferenceClient:
         prompt_token_ids: List[int],
         sampling_params: Dict[str, Any],
         session_id: Optional[Any],
+        mm_features: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Generate completion for a single prompt.
@@ -333,11 +337,13 @@ class RemoteInferenceClient:
         # Use LoRA adapter name if one is active, otherwise use base model name
         effective_model = self.active_lora_name if self.active_lora_name else self.model_name
 
-        payload = {
+        payload: Dict[str, Any] = {
             "sampling_params": sampling_params,
             "model": effective_model,
             "token_ids": prompt_token_ids,
         }
+        if mm_features:
+            payload["features"] = mm_features
 
         headers = {"Content-Type": "application/json"}
         if session_id:

@@ -24,7 +24,7 @@ set -x
 : "${EXPORT_PATH:="$HOME/exports/visgym_maze2d"}"
 : "${DUMP_TRAINING_BATCHES:=false}"
 : "${DUMP_EVAL_RESULTS:=true}"
-: "${EVAL_INTERVAL:=1}"
+: "${EVAL_INTERVAL:=-1}"
 
 MODEL_PATH="/home/ray/models/visgym_model/mixed_qwen3vl"
 _SKYRL_USE_NEW_INFERENCE=1 \
