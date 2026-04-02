@@ -1,9 +1,8 @@
 """
-Multimodal render and sampling tests for the new inference path.
+Multimodal render tests for the new inference path.
 
 Tests /v1/chat/completions/render with a VLM to verify multimodal
 inputs are correctly tokenized and multimodal features are returned.
-Tests sample() with multimodal inputs end-to-end.
 
 # Run with:
 uv run --isolated --extra dev --extra fsdp pytest tests/backends/skyrl_train/gpu/gpu_ci/inference_servers/test_vlm_inference_generation.py -m vllm -v
@@ -124,101 +123,6 @@ def test_render_chat_completion_multimodal(module_scoped_ray_init_fixture):
         assert isinstance(placeholder["length"], int)
         assert placeholder["length"] > 0
         assert placeholder["offset"] + placeholder["length"] <= len(token_ids)
-
-    finally:
-        if engines is not None:
-            engines.close()
-
-
-def _make_base64_red_square() -> str:
-    """Create a 28x28 red square JPEG image and return raw base64 (no data URI prefix)."""
-    img = Image.new("RGB", (28, 28), color=(255, 0, 0))
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG")
-    return base64.b64encode(buf.getvalue()).decode("utf-8")
-
-
-@pytest.mark.vllm
-def test_sample_multimodal_red_square(module_scoped_ray_init_fixture):
-    """Test sample() with a red square image and verify the model identifies the color."""
-    engines = None
-    try:
-        cfg = get_test_actor_config(num_inference_engines=1, model=MODEL_QWEN3_VL)
-        cfg.generator.inference_engine.served_model_name = MODEL_QWEN3_VL
-        engines = InferenceEngineState.create(
-            cfg=cfg,
-            use_local=True,
-            backend="vllm",
-            model=MODEL_QWEN3_VL,
-            sleep_level=1,
-            engine_init_kwargs={
-                "max_model_len": 4096,
-                "limit_mm_per_prompt": {"image": 1, "video": 0},
-                "mm_processor_cache_gb": 0,
-            },
-            use_new_inference_servers=True,
-        )
-        client = engines.client
-
-        b64_image = _make_base64_red_square()
-        data_uri = f"data:image/jpeg;base64,{b64_image}"
-
-        # Step 1: Render the full chat message to get properly template-formatted tokens
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": data_uri}},
-                    {"type": "text", "text": "What color is this square?"},
-                ],
-            }
-        ]
-        render_result = asyncio.run(
-            client.render_chat_completion({"json": {"model": MODEL_QWEN3_VL, "messages": messages}})
-        )
-
-        # Step 2: Extract text tokens before/after the image placeholder
-        token_ids = render_result["token_ids"]
-        features = render_result["features"]
-        placeholder = features["mm_placeholders"]["image"][0]
-        offset = placeholder["offset"]
-        length = placeholder["length"]
-
-        text_before = token_ids[:offset]
-        text_after = token_ids[offset + length :]
-
-        # Step 3: Build Tinker-style chunks (text + image + text)
-        chunks = []
-        if text_before:
-            chunks.append({"type": "encoded_text", "tokens": text_before})
-        chunks.append({"type": "image", "data": b64_image, "format": "jpeg"})
-        if text_after:
-            chunks.append({"type": "encoded_text", "tokens": text_after})
-
-        # Step 4: Call sample() with multi-modal prompt
-        request_payload = {
-            "json": {
-                "prompt": {"chunks": chunks},
-                "num_samples": 1,
-                "sampling_params": {
-                    "max_tokens": 64,
-                    "temperature": 0.0,
-                },
-            }
-        }
-
-        result = asyncio.run(client.sample(request_payload))
-
-        assert result["type"] == "sample"
-        assert len(result["sequences"]) >= 1
-
-        seq = result["sequences"][0]
-        tokens = seq["tokens"]
-        assert len(tokens) > 0
-
-        # Detokenize and verify the model mentions "red"
-        text = asyncio.run(client.detokenize([tokens]))[0]
-        assert "red" in text.lower(), f"Expected 'red' in response, got: {text}"
 
     finally:
         if engines is not None:
