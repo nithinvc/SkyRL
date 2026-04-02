@@ -30,14 +30,23 @@ set -x
 : "${POLICY_MINI_BATCH_SIZE:=32}"
 : "${N_SAMPLES_PER_PROMPT:=16}"
 : "${NUM_DATASET_ROWS:=256}"
+: "${EVAL_DATA_DIR:="$HOME/data/visgym_matchstick_rotation_eval"}"
 
 # ── Generate stub dataset if it doesn't exist ────────────────────────
 if [ ! -f "$DATA_DIR/train.parquet" ]; then
-  echo "=== Generating stub dataset for $ENV_ID ==="
+  echo "=== Generating train stub dataset for $ENV_ID ==="
   uv run examples/train/visgym/visgym_dataset.py \
     --env_id "$ENV_ID" \
     --num_rows "$NUM_DATASET_ROWS" \
     --output_dir "$DATA_DIR"
+fi
+
+if [ ! -f "$EVAL_DATA_DIR/train.parquet" ]; then
+  echo "=== Generating eval stub dataset for $ENV_ID ==="
+  uv run examples/train/visgym/visgym_dataset.py \
+    --env_id "$ENV_ID" \
+    --num_rows 32 \
+    --output_dir "$EVAL_DATA_DIR"
 fi
 
 MODEL_PATH="/home/ray/models/visgym_model/mixed_qwen3vl"
@@ -45,6 +54,7 @@ _SKYRL_USE_NEW_INFERENCE=1 \
 uv run --isolated --extra fsdp \
   python examples/train/visgym/visgym_entrypoint.py \
   data.train_data="['$DATA_DIR/train.parquet']" \
+  data.val_data="['$EVAL_DATA_DIR/train.parquet']" \
   trainer.algorithm.advantage_estimator="grpo" \
   trainer.policy.model.path="$MODEL_PATH" \
   trainer.placement.colocate_all=false \
