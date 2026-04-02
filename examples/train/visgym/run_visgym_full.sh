@@ -19,7 +19,7 @@ set -x
 : "${DATA_DIR:="$HOME/data/visgym_matchstick_rotation"}"
 : "${NUM_INFERENCE_GPUS:=4}"
 : "${NUM_TRAIN_GPUS:=4}"
-: "${LOGGER:=console}"
+: "${LOGGER:=wandb}"
 
 : "${EXPORT_PATH:="$HOME/exports/visgym_matchstick_rotation"}"
 : "${DUMP_TRAINING_BATCHES:=false}"
@@ -76,7 +76,7 @@ uv run --isolated --extra fsdp \
   trainer.policy.optimizer_config.lr=1.0e-6 \
   environment.env_class=visgym \
   trainer.logger="$LOGGER" \
-  trainer.project_name="visgym_matchstick_rotation" \
+  trainer.project_name="vlm_matchstick_easy" \
   trainer.run_name="matchstick_rotation_easy_full" \
   trainer.resume_mode=null \
   trainer.log_path="/tmp/skyrl-logs" \
