@@ -261,6 +261,15 @@ class RayPPOTrainer:
                     with Timer("convert_to_training_input", self.all_timings):
                         training_input: TrainingInputBatch = self.convert_to_training_input(generator_output, uids)
 
+                    if self.cfg.trainer.dump_data_batch:
+                        # Dump before ref/policy forward so crashes in fwd_logprobs still leave a pickle
+                        # (includes rewards, pixel_values, image_grid_thw, etc.).
+                        with Timer("dump_data_batch_post_convert", self.all_timings):
+                            self.dump_data(
+                                self._clone_training_input_batch_cpu(training_input),
+                                file_name=f"global_step_{self.global_step}_training_input_post_convert",
+                            )
+
                     # 4. Inference and calculate values, log probs, rewards, kl divergence
                     with Timer("fwd_logprobs_values_reward", self.all_timings):
                         training_input = self.fwd_logprobs_values_reward(training_input)
@@ -895,6 +904,20 @@ class RayPPOTrainer:
         data_save_dir = Path(self.cfg.trainer.export_path) / "dumped_data"
         data_save_dir.mkdir(parents=True, exist_ok=True)
         data.save(data_save_dir / f"{file_name}.pkl")
+
+    def _clone_training_input_batch_cpu(self, training_input: TrainingInputBatch) -> TrainingInputBatch:
+        """Deep-copy tensors to CPU without mutating the live batch (TensorBatch.to mutates in place)."""
+        cloned: Dict[str, Any] = {}
+        for key, value in training_input.items():
+            if value is None:
+                cloned[key] = None
+            elif isinstance(value, TensorList):
+                cloned[key] = TensorList([t.detach().cpu().clone() for t in value.tensors])
+            else:
+                cloned[key] = value.detach().cpu().clone()
+        out = TrainingInputBatch(cloned)
+        out.metadata = copy.deepcopy(training_input.metadata)
+        return out
 
     def pad_batch(self, training_input: TrainingInputBatch) -> TrainingInputBatch:
         """Pad the batch to be divisible by dp size"""

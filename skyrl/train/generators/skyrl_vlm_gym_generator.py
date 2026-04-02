@@ -52,7 +52,8 @@ def deserialize_mm_features(features: dict) -> Tuple[torch.Tensor, torch.Tensor]
         features: The ``features`` dict from a render response.
 
     Returns:
-        ``(pixel_values, image_grid_thw)`` — concatenated across all images.
+        ``(pixel_values, image_grid_thw)`` — ``pixel_values`` concatenated along the patch
+        dimension; ``image_grid_thw`` stacked to ``[num_images, 3]`` (one row per image).
         Returns empty tensors when no vision data is present.
     """
     kwargs_data = (features or {}).get("kwargs_data")
@@ -76,7 +77,7 @@ def deserialize_mm_features(features: dict) -> Tuple[torch.Tensor, torch.Tensor]
             thw_parts.append(data["image_grid_thw"])
 
     pixel_values = torch.cat(pv_parts, dim=0) if pv_parts else torch.empty(0)
-    image_grid_thw = torch.cat(thw_parts, dim=0) if thw_parts else torch.empty(0, 3, dtype=torch.long)
+    image_grid_thw = torch.stack(thw_parts, dim=0) if thw_parts else torch.empty(0, 3, dtype=torch.long)
     return pixel_values, image_grid_thw
 
 

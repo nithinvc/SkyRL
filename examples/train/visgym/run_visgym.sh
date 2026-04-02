@@ -19,10 +19,17 @@ set -x
 : "${LOGGER:=console}"
 
 # Trajectory / rollout export (all under trainer.export_path):
-# - Training: set DUMP_TRAINING_BATCHES=true → dumped_data/global_step_<N>_training_input.pkl (pickled TrainingInputBatch).
+# - Training: set DUMP_TRAINING_BATCHES=true → dumped_data/global_step_<N>_training_input_post_convert.pkl (before ref/policy
+#   forward; survives crashes in fwd_logprobs) and global_step_<N>_training_input.pkl (after advantages; legacy).
 # - Eval: set EVAL_INTERVAL>0 and DUMP_EVAL_RESULTS=true → dumped_evals/global_step_<N>_evals/*.jsonl (prompt/response/reward/env_extras).
+#
+# Faster debug iteration (fewer rollouts / smaller batch), e.g.:
+#   N_SAMPLES_PER_PROMPT=4 TRAIN_BATCH_SIZE=8 DUMP_TRAINING_BATCHES=true bash examples/train/visgym/run_visgym.sh
 : "${EXPORT_PATH:="$HOME/exports/visgym_maze2d"}"
 : "${DUMP_TRAINING_BATCHES:=false}"
+: "${TRAIN_BATCH_SIZE:=32}"
+: "${POLICY_MINI_BATCH_SIZE:=$TRAIN_BATCH_SIZE}"
+: "${N_SAMPLES_PER_PROMPT:=16}"
 : "${DUMP_EVAL_RESULTS:=true}"
 : "${EVAL_INTERVAL:=-1}"
 
@@ -45,8 +52,8 @@ uv run --isolated --extra fsdp \
   generator.inference_engine.async_engine=true \
   generator.inference_engine.engine_init_kwargs.max_model_len=60000 \
   trainer.epochs=3 \
-  trainer.train_batch_size=32 \
-  trainer.policy_mini_batch_size=32 \
+  trainer.train_batch_size=$TRAIN_BATCH_SIZE \
+  trainer.policy_mini_batch_size=$POLICY_MINI_BATCH_SIZE \
   trainer.micro_forward_batch_size_per_gpu=8 \
   trainer.micro_train_batch_size_per_gpu=4 \
   trainer.update_epochs_per_batch=1 \
@@ -55,7 +62,7 @@ uv run --isolated --extra fsdp \
   generator.sampling_params.temperature=1.0 \
   generator.max_turns=24 \
   generator.max_input_length=4096 \
-  generator.n_samples_per_prompt=16 \
+  generator.n_samples_per_prompt=$N_SAMPLES_PER_PROMPT \
   generator.is_vlm=true \
   generator.batched=false \
   trainer.algorithm.use_kl_loss=true \
