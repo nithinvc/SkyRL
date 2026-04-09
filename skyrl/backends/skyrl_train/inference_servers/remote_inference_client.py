@@ -467,10 +467,9 @@ class RemoteInferenceClient:
                 url = c["location"]
             content_parts.append({"type": "image_url", "image_url": {"url": url}})
 
-        effective_model = self.active_lora_name if self.active_lora_name else self.model_name
         render_payload: Dict[str, Any] = {
             "json": {
-                "model": effective_model,
+                "model": self.model_name,
                 "messages": [{"role": "user", "content": content_parts}],
             }
         }

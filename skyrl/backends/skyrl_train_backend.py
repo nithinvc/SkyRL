@@ -16,7 +16,7 @@ from ray.util.placement_group import placement_group
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from skyrl.backends.backend import AbstractBackend
-from skyrl.backends.renderer import render_model_input
+from skyrl.backends.renderer import VLLMRenderer, render_model_input
 from skyrl.backends.skyrl_train.inference_engines.inference_engine_client import (
     InferenceEngineClient,
 )
@@ -29,7 +29,7 @@ from skyrl.backends.skyrl_train.inference_servers.remote_inference_client import
 from skyrl.backends.skyrl_train.inference_servers.server_group import ServerGroup
 from skyrl.backends.skyrl_train.inference_servers.utils import build_vllm_cli_args
 from skyrl.backends.skyrl_train.inference_servers.vllm_router import VLLMRouter
-from skyrl.backends.skyrl_train.training_batch import TrainingInputBatch
+from skyrl.backends.skyrl_train.training_batch import TensorList, TrainingInputBatch
 from skyrl.backends.skyrl_train.workers.worker import PPORayActorGroup
 from skyrl.backends.skyrl_train.workers.worker_dispatch import WorkerDispatch
 from skyrl.env_vars import _SKYRL_USE_NEW_INFERENCE, SKYRL_RAY_PG_TIMEOUT_IN_S
@@ -369,13 +369,46 @@ class SkyRLTrainBackend(AbstractBackend):
 
         logger.info(f"Successfully deleted model {model_id}")
 
-    def _to_training_batch(self, prepared_batch: types.PreparedModelPassBatch) -> TrainingInputBatch:
-        """Convert PreparedModelPassBatch to TrainingInputBatch."""
+    def _has_vlm_inputs(self, model_inputs: list[types.ModelInput]) -> bool:
+        """Check if any ModelInput in the batch contains image chunks."""
+        return any(
+            any(isinstance(c, (types.ImageChunk, types.ImageAssetPointerChunk)) for c in mi.chunks)
+            for mi in model_inputs
+        )
+
+    def _render_vlm_inputs(self, model_inputs: list[types.ModelInput]) -> list[types.RenderedModelInput]:
+        """Render ModelInputs containing images via VLLMRenderer.
+
+        Ensures inference engines exist (for the HTTP render endpoint) and uses
+        VLLMRenderer to produce RenderedModelInputs with prompt_ids (including
+        image placeholder tokens) and multi_modal_kwargs (pixel_values,
+        image_grid_thw).
+        """
+        self._ensure_inference_engines()
+        renderer = VLLMRenderer(self._inference_engine_client, self._cfg.trainer.policy.model.path)
+        return asyncio.run(renderer(model_inputs))
+
+    def _to_training_batch(
+        self,
+        prepared_batch: types.PreparedModelPassBatch,
+        rendered_inputs: list[types.RenderedModelInput] | None = None,
+    ) -> TrainingInputBatch:
+        """Convert PreparedModelPassBatch to TrainingInputBatch.
+
+        Args:
+            prepared_batch: The prepared batch from the Tinker engine.
+            rendered_inputs: If provided, VLLMRenderer outputs that include
+                prompt_ids with image placeholder tokens and multi_modal_kwargs
+                with decoded pixel_values / image_grid_thw tensors. When None,
+                falls back to text-only render_model_input().
+        """
         if not prepared_batch.all_model_inputs:
             return TrainingInputBatch({})
 
-        # Extract token IDs from ModelInput chunks
-        all_input_ids = [r.prompt_ids for r in render_model_input(prepared_batch.all_model_inputs)]
+        if rendered_inputs is not None:
+            all_input_ids = [r.prompt_ids for r in rendered_inputs]
+        else:
+            all_input_ids = [r.prompt_ids for r in render_model_input(prepared_batch.all_model_inputs)]
 
         # SkyRL-Train shifts internally, so provide the full sequence length by
         # appending the last target token to each already-shifted input.
@@ -424,6 +457,23 @@ class SkyRLTrainBackend(AbstractBackend):
             batch_dict["action_log_probs"] = torch.tensor(action_log_probs_list, dtype=torch.float32)
         if has_advantages:
             batch_dict["advantages"] = torch.tensor(advantages_list, dtype=torch.float32)
+
+        # Include VLM vision fields when rendered inputs contain multi-modal data
+        if rendered_inputs is not None:
+            pv_tensors = [
+                r.multi_modal_kwargs["pixel_values"]
+                for r in rendered_inputs
+                if r.multi_modal_kwargs is not None and r.multi_modal_kwargs.get("pixel_values") is not None
+            ]
+            thw_tensors = [
+                r.multi_modal_kwargs["image_grid_thw"]
+                for r in rendered_inputs
+                if r.multi_modal_kwargs is not None and r.multi_modal_kwargs.get("image_grid_thw") is not None
+            ]
+            if pv_tensors:
+                batch_dict["pixel_values"] = TensorList(pv_tensors)
+            if thw_tensors:
+                batch_dict["image_grid_thw"] = TensorList(thw_tensors)
 
         batch = TrainingInputBatch(batch_dict)
         batch.metadata = {"response_length": max_response_len}
@@ -510,8 +560,12 @@ class SkyRLTrainBackend(AbstractBackend):
         if not prepared_batch.all_model_inputs:
             return {}
 
+        rendered = None
+        if self._has_vlm_inputs(prepared_batch.all_model_inputs):
+            rendered = self._render_vlm_inputs(prepared_batch.all_model_inputs)
+
         self._sleep_inference_engines()
-        batch = self._to_training_batch(prepared_batch)
+        batch = self._to_training_batch(prepared_batch, rendered_inputs=rendered)
         micro_bs = (
             self._cfg.trainer.micro_train_batch_size_per_gpu if self._cfg.trainer.strategy == "megatron" else None
         )
@@ -573,8 +627,12 @@ class SkyRLTrainBackend(AbstractBackend):
         if not prepared_batch.all_model_inputs:
             return {}
 
+        rendered = None
+        if self._has_vlm_inputs(prepared_batch.all_model_inputs):
+            rendered = self._render_vlm_inputs(prepared_batch.all_model_inputs)
+
         self._sleep_inference_engines()
-        batch = self._to_training_batch(prepared_batch)
+        batch = self._to_training_batch(prepared_batch, rendered_inputs=rendered)
         micro_bs = (
             self._cfg.trainer.micro_forward_batch_size_per_gpu if self._cfg.trainer.strategy == "megatron" else None
         )
