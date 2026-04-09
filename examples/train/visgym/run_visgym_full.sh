@@ -68,7 +68,7 @@ uv run --isolated --extra fsdp \
   generator.inference_engine.gpu_memory_utilization=0.8 \
   generator.inference_engine.async_engine=true \
   generator.inference_engine.engine_init_kwargs.max_model_len=60000 \
-  trainer.epochs=6 \
+  trainer.epochs=10 \
   trainer.train_batch_size=$TRAIN_BATCH_SIZE \
   trainer.policy_mini_batch_size=$POLICY_MINI_BATCH_SIZE \
   trainer.micro_forward_batch_size_per_gpu=8 \
@@ -82,7 +82,7 @@ uv run --isolated --extra fsdp \
   generator.n_samples_per_prompt=$N_SAMPLES_PER_PROMPT \
   generator.is_vlm=true \
   generator.batched=false \
-  trainer.algorithm.use_kl_loss=true \
+  trainer.algorithm.use_kl_loss=false \
   trainer.policy.optimizer_config.lr=1.0e-6 \
   environment.env_class=visgym \
   trainer.logger="$LOGGER" \

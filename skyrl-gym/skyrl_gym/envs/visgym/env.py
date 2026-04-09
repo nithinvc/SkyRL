@@ -5,6 +5,12 @@ import gymnasium
 from skyrl_gym.envs.base_text_env import BaseTextEnv, BaseTextEnvStepOutput, ConversationType
 from skyrl_gym.envs.visgym.utils import extract_action, make_image_message
 
+_FORMAT_INSTRUCTION = (
+    "\n\nIMPORTANT: Respond with exactly one action as a Python tuple, "
+    "e.g. ('move', 0) or ('stop', 'stop'). "
+    "Do not wrap the action in backticks, code blocks, or other formatting."
+)
+
 
 class VisGymEnv(BaseTextEnv):
     """Wraps a VisGym environment as a BaseTextEnv for use with SkyRLGymGenerator.
@@ -35,11 +41,30 @@ class VisGymEnv(BaseTextEnv):
         self.step_count = 0
         self.parse_failures = 0
 
+    def _get_available_actions(self) -> List[str]:
+        """Return the action names this environment supports, if available."""
+        try:
+            return list(self.visgym_env.action_space.get_function_names())
+        except Exception:
+            return []
+
+    def _build_parse_error(self, available_actions: List[str]) -> str:
+        """Build a concise, informative error message for parse failures."""
+        msg = "Action parsing failed. Could not find a valid action tuple in your response."
+        msg += "\nPlease respond with exactly one action as a Python tuple."
+        if available_actions:
+            names = ", ".join(f"'{a}'" for a in available_actions)
+            msg += f"\nAvailable actions: {names}"
+            msg += f"\nExample: ('{available_actions[0]}', 0) or ('stop', 'stop')"
+        else:
+            msg += "\nExample: ('action_name', payload)"
+        return msg
+
     def init(self, prompt: ConversationType) -> Tuple[ConversationType, Dict[str, Any]]:
         """Reset the VisGym env and return the initial multimodal prompt."""
         obs, info = self.visgym_env.reset(seed=self.seed_value)
 
-        task_prompt = self.visgym_env.get_prompt()
+        task_prompt = self.visgym_env.get_prompt() + _FORMAT_INSTRUCTION
         image = self.visgym_env.render()
 
         user_msg = make_image_message(task_prompt, image)
@@ -51,18 +76,38 @@ class VisGymEnv(BaseTextEnv):
         self.turns += 1
         self.step_count += 1
 
-        # Extract action tuple from VLM output (strips reasoning text)
         extracted, matched = extract_action(action)
+
         if not matched:
             self.parse_failures += 1
+            done = self.step_count >= self.max_turns
 
-        # Step the VisGym environment
+            if not done:
+                image = self.visgym_env.render()
+                feedback = self._build_parse_error(self._get_available_actions())
+                obs_msg = make_image_message(feedback, image)
+                observations = [obs_msg]
+            else:
+                observations = []
+
+            return BaseTextEnvStepOutput(
+                observations=observations,
+                reward=0.0,
+                done=done,
+                metadata={
+                    "env_feedback": "parse_failure",
+                    "terminated": False,
+                    "truncated": False,
+                    "step_count": self.step_count,
+                    "extracted_action": "",
+                },
+            )
+
         obs, reward, terminated, truncated, info = self.visgym_env.step(extracted)
 
         done = terminated or truncated or self.step_count >= self.max_turns
 
         if not done:
-            # Build multimodal observation with updated image + feedback
             image = self.visgym_env.render()
             feedback = info.get("env_feedback", None) or ""
             if not feedback:
