@@ -3,7 +3,8 @@ VLM integration tests for the new inference path and tinker renderer.
 
 Tests /v1/chat/completions/render with a VLM to verify multimodal
 inputs are correctly tokenized and multimodal features are returned,
-and exercises VLLMRenderer end-to-end.
+exercises VLLMRenderer end-to-end, and tests sample() with multimodal
+Tinker prompts.
 
 Requires a local vLLM install with /v1/chat/completions/render support.
 
@@ -288,3 +289,75 @@ async def test_renderer_decodes_mm_kwargs(module_scoped_ray_init_fixture):
         assert isinstance(image_grid_thw, torch.Tensor)
         assert image_grid_thw.shape[1] == 3
         assert image_grid_thw.dtype == torch.long
+
+
+# ---------------------------------------------------------------------------
+# sample() multimodal tests
+# ---------------------------------------------------------------------------
+
+
+@requires_local_vllm
+@pytest.mark.vllm
+@pytest.mark.asyncio
+async def test_sample_with_multimodal_image(module_scoped_ray_init_fixture):
+    """Test sample() with a Tinker prompt containing [text, image, text] chunks on a real VLM."""
+    cfg = get_test_actor_config(num_inference_engines=1, model=MODEL_QWEN3_VL)
+    cfg.generator.inference_engine.served_model_name = MODEL_QWEN3_VL
+    async with InferenceEngineState.create(
+        cfg=cfg,
+        use_local=True,
+        backend="vllm",
+        model=MODEL_QWEN3_VL,
+        sleep_level=1,
+        engine_init_kwargs={
+            "max_model_len": 4096,
+            "limit_mm_per_prompt": {"image": 1, "video": 0},
+        },
+        use_new_inference_servers=True,
+    ) as engines:
+        client = engines.client
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_QWEN3_VL)
+
+        # Tokenize text portions using the model's tokenizer.
+        prefix_text = "<|im_start|>user\n"
+        suffix_text = "What color is this image? Answer in one word.<|im_end|>\n<|im_start|>assistant\n"
+        prefix_ids = tokenizer.encode(prefix_text, add_special_tokens=False)
+        suffix_ids = tokenizer.encode(suffix_text, add_special_tokens=False)
+
+        # Build a tiny JPEG as raw base64 (matching model_dump() output for Base64Bytes).
+        img = Image.new("RGB", (8, 8), color=(255, 0, 0))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG")
+        image_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        # Construct Tinker-style prompt: [text chunk, image chunk, text chunk]
+        prompt = {
+            "chunks": [
+                {"type": "encoded_text", "tokens": prefix_ids},
+                {"type": "image", "data": image_b64, "format": "jpeg"},
+                {"type": "encoded_text", "tokens": suffix_ids},
+            ]
+        }
+
+        request_payload = {
+            "json": {
+                "prompt": prompt,
+                "num_samples": 1,
+                "sampling_params": {"temperature": 0.0, "max_tokens": 20},
+            }
+        }
+
+        result = await client.sample(request_payload)
+
+        assert result["type"] == "sample"
+        sequences = result["sequences"]
+        assert len(sequences) == 1
+
+        seq = sequences[0]
+        assert isinstance(seq["tokens"], list)
+        assert len(seq["tokens"]) > 0
+        assert seq["stop_reason"] in ("stop", "length")
+
+        # Decode and check the model produced something reasonable.
+        output_text = tokenizer.decode(seq["tokens"], skip_special_tokens=True)
+        assert len(output_text.strip()) > 0
