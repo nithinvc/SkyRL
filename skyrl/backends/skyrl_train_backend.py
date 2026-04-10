@@ -410,9 +410,6 @@ class SkyRLTrainBackend(AbstractBackend):
         else:
             all_input_ids = [r.prompt_ids for r in render_model_input(prepared_batch.all_model_inputs)]
 
-        logger.info(f"pv shapes: {[r.multi_modal_kwargs['pixel_values'].shape for r in rendered_inputs]}")
-        logger.info(f"thw shapes: {[r.multi_modal_kwargs['image_grid_thw'].shape for r in rendered_inputs]}")
-
         # SkyRL-Train shifts internally, so provide the full sequence length by
         # appending the last target token to each already-shifted input.
         full_sequences = [
