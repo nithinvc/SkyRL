@@ -410,6 +410,9 @@ class SkyRLTrainBackend(AbstractBackend):
         else:
             all_input_ids = [r.prompt_ids for r in render_model_input(prepared_batch.all_model_inputs)]
 
+        logger.info(f"pv shapes: {[r.multi_modal_kwargs['pixel_values'].shape for r in rendered_inputs]}")
+        logger.info(f"thw shapes: {[r.multi_modal_kwargs['image_grid_thw'].shape for r in rendered_inputs]}")
+
         # SkyRL-Train shifts internally, so provide the full sequence length by
         # appending the last target token to each already-shifted input.
         full_sequences = [
@@ -503,14 +506,20 @@ class SkyRLTrainBackend(AbstractBackend):
         new_tensors = {}
         for key, tensor in batch.items():
             if tensor is not None:
-                if key == "loss_mask":
+                if isinstance(tensor, TensorList):
+                    n = len(tensor)
+                    pad_indices = [i % n for i in range(pad_size)]
+                    padding = TensorList([tensor[i].clone() for i in pad_indices])
+                    new_tensors[key] = TensorList.cat([tensor, padding])
+                elif key == "loss_mask":
                     # Padding entries must not contribute to the loss
                     additional_dims = tensor.shape[1:]
                     padding_tensor = torch.zeros(pad_size, *additional_dims, dtype=tensor.dtype, device=tensor.device)
+                    new_tensors[key] = torch.cat([tensor, padding_tensor], dim=0)
                 else:
                     # Clone real data so shapes/dtypes are valid for the model
                     padding_tensor = tensor[torch.arange(pad_size) % tensor.shape[0]].clone()
-                new_tensors[key] = torch.cat([tensor, padding_tensor], dim=0)
+                    new_tensors[key] = torch.cat([tensor, padding_tensor], dim=0)
 
         padded = TrainingInputBatch(new_tensors)
         padded.metadata = batch.metadata
