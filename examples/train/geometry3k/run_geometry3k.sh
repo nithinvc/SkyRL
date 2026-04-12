@@ -11,7 +11,7 @@ set -x
 : "${LOGGER:=wandb}"
 : "${INFERENCE_BACKEND:=vllm}"
 
-uv run --isolated --extra fsdp \
+_SKYRL_USE_NEW_INFERENCE=1 uv run --isolated --extra fsdp \
   python examples/train/geometry3k/geometry3k_entrypoint.py \
   data.train_data="['$DATA_DIR/train.parquet']" \
   data.val_data="['$DATA_DIR/train-dev.parquet']" \
