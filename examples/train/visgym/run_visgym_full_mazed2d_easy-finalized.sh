@@ -68,7 +68,7 @@ uv run --isolated --extra fsdp \
   generator.inference_engine.gpu_memory_utilization=0.8 \
   generator.inference_engine.async_engine=true \
   generator.inference_engine.engine_init_kwargs.max_model_len=60000 \
-  trainer.epochs=30 \
+  trainer.epochs=20 \
   trainer.train_batch_size=$TRAIN_BATCH_SIZE \
   trainer.policy_mini_batch_size=$POLICY_MINI_BATCH_SIZE \
   trainer.micro_forward_batch_size_per_gpu=4 \
@@ -76,7 +76,7 @@ uv run --isolated --extra fsdp \
   trainer.update_epochs_per_batch=1 \
   trainer.max_prompt_length=2048 \
   generator.sampling_params.max_generate_length=1024 \
-  generator.sampling_params.temperature=0.7 \
+  generator.sampling_params.temperature=1 \
   generator.max_turns=16 \
   generator.max_input_length=8192 \
   generator.n_samples_per_prompt=$N_SAMPLES_PER_PROMPT \
@@ -96,5 +96,5 @@ uv run --isolated --extra fsdp \
   trainer.ckpt_path="$HOME/ckpts/visgym_maze_2d_easy" \
   trainer.use_sample_packing=false \
   trainer.eval_interval="$EVAL_INTERVAL" \
-  trainer.ckpt_interval=25 \
+  trainer.ckpt_interval=10 \
   "$@"

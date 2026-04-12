@@ -68,8 +68,10 @@ class Geometry3kEnv(BaseTextEnv):
             logger.warning("Failed to decode tool call payload: %s", raw_json)
             return None
 
-        name = payload.get("name") or payload.get("function", {}).get("name")
-        arguments = payload.get("arguments") or payload.get("function", {}).get("arguments") or {}
+        func_field = payload.get("function")
+        func_dict = func_field if isinstance(func_field, dict) else {}
+        name = payload.get("name") or func_dict.get("name")
+        arguments = payload.get("arguments") or func_dict.get("arguments") or {}
         if isinstance(arguments, str):
             try:
                 arguments = json.loads(arguments)
