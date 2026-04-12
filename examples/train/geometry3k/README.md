@@ -16,7 +16,7 @@ The [Geometry-3K dataset](https://huggingface.co/datasets/hiyouga/geometry3k) co
 Convert the HuggingFace dataset to parquet format:
 
 ```bash
-uv run examples/geometry-3k/geometry_3k_dataset.py --output_dir ~/data/geometry_3k
+uv run examples/train/geometry3k/geometry_3k_dataset.py --output_dir ~/data/geometry_3k
 ```
 
 This creates:

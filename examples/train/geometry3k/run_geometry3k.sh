@@ -7,7 +7,7 @@ set -x
 # bash examples/train/geometry3k/run_geometry3k.sh
 
 : "${DATA_DIR:="$HOME/data/geometry_3k"}"
-: "${NUM_GPUS:=4}"
+: "${NUM_GPUS:=8}"
 : "${LOGGER:=wandb}"
 : "${INFERENCE_BACKEND:=vllm}"
 
@@ -16,7 +16,7 @@ uv run --isolated --extra fsdp \
   data.train_data="['$DATA_DIR/train.parquet']" \
   data.val_data="['$DATA_DIR/train-dev.parquet']" \
   trainer.algorithm.advantage_estimator="grpo" \
-  trainer.policy.model.path="Qwen/Qwen2.5-VL-3B-Instruct" \
+  trainer.policy.model.path="Qwen/Qwen3-VL-8B-Instruct" \
   trainer.placement.colocate_all=true \
   trainer.strategy=fsdp2 \
   trainer.placement.policy_num_gpus_per_node=$NUM_GPUS \
