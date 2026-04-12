@@ -34,6 +34,7 @@ _SKYRL_USE_NEW_INFERENCE=1 uv run --isolated --extra fsdp \
   trainer.micro_forward_batch_size_per_gpu=4 \
   trainer.micro_train_batch_size_per_gpu=4 \
   trainer.ckpt_interval=10 \
+  trainer.use_sample_packing=false \
   trainer.max_prompt_length=1024 \
   generator.sampling_params.max_generate_length=2048 \
   generator.max_turns=3 \

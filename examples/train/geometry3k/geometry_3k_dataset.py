@@ -114,6 +114,7 @@ if __name__ == "__main__":
         function=make_map_fn("train"),
         with_indices=True,
         num_proc=os.cpu_count(),
+        remove_columns=train_dataset.column_names,
         desc="Processing dataset",
     )
 
@@ -139,6 +140,7 @@ if __name__ == "__main__":
             function=make_map_fn("test"),
             with_indices=True,
             num_proc=os.cpu_count(),
+            remove_columns=test_dataset.column_names,
             desc="Processing test dataset",
         )
         test_parquet_path = os.path.join(output_dir, "test.parquet")
