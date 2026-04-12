@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 from collections import defaultdict
@@ -239,6 +240,44 @@ def calculate_per_dataset_metrics(
     return eval_metrics
 
 
+def _extract_images_from_conversation(conversation: List[Dict[str, Any]]) -> List[bytes]:
+    """Extract PNG image bytes from base64-encoded image_url entries in a conversation."""
+    images: List[bytes] = []
+    for msg in conversation:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if part.get("type") != "image_url":
+                continue
+            url = part.get("image_url", {}).get("url", "")
+            if url.startswith("data:image/png;base64,"):
+                b64_data = url[len("data:image/png;base64,"):]
+                try:
+                    images.append(base64.b64decode(b64_data))
+                except Exception:
+                    pass
+    return images
+
+
+def _strip_base64_from_conversation(conversation: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return a copy of the conversation with base64 image data replaced by a placeholder."""
+    stripped: List[Dict[str, Any]] = []
+    for msg in conversation:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            stripped.append(msg)
+            continue
+        new_content = []
+        for part in content:
+            if part.get("type") == "image_url":
+                new_content.append({"type": "image_url", "image_url": {"url": "<image>"}})
+            else:
+                new_content.append(part)
+        stripped.append({**msg, "content": new_content})
+    return stripped
+
+
 def dump_per_dataset_eval_results(
     dump_dir_path: Path,
     tokenizer: AutoTokenizer,
@@ -253,6 +292,7 @@ def dump_per_dataset_eval_results(
     # Prepare common data
     input_prompts = [tokenizer.decode(prompt) for prompt in concat_generator_outputs["prompt_token_ids"]]
     output_responses = [tokenizer.decode(response) for response in concat_generator_outputs["response_ids"]]
+    conversations = concat_generator_outputs.get("conversations")
 
     # Group indices by data source
     data_source_indices = {}
@@ -279,9 +319,33 @@ def dump_per_dataset_eval_results(
                     "env_extras": concat_env_extras[i],
                     "data_source": data_source,
                 }
+                if conversations and conversations[i] is not None:
+                    entry["conversation"] = _strip_base64_from_conversation(conversations[i])
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
         logger.info(f"Dumped eval data for {data_source} to {filename}")
+
+        # Dump full conversations with images when available
+        if conversations:
+            for i in indices:
+                conv = conversations[i]
+                if conv is None:
+                    continue
+                traj_dir = dump_dir_path / "trajectories" / sanitized_data_source / f"traj_{i}"
+                traj_dir.mkdir(parents=True, exist_ok=True)
+
+                with open(traj_dir / "conversation.json", "w") as f:
+                    json.dump(conv, f, ensure_ascii=False, indent=2)
+
+                images = _extract_images_from_conversation(conv)
+                for img_idx, img_bytes in enumerate(images):
+                    with open(traj_dir / f"step_{img_idx}.png", "wb") as f:
+                        f.write(img_bytes)
+
+            logger.info(
+                f"Dumped {len(indices)} trajectory conversations/images for {data_source} "
+                f"to {dump_dir_path / 'trajectories' / sanitized_data_source}"
+            )
 
     # Dump aggregated results file
     aggregated_filename = dump_dir_path / "aggregated_results.jsonl"

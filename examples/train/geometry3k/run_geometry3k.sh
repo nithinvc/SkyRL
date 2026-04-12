@@ -10,6 +10,8 @@ set -x
 : "${NUM_GPUS:=8}"
 : "${LOGGER:=wandb}"
 : "${INFERENCE_BACKEND:=vllm}"
+: "${EXPORT_PATH:="$HOME/exports/geometry3k_vlm"}"
+: "${DUMP_EVAL_RESULTS:=true}"
 
 _SKYRL_USE_NEW_INFERENCE=1 uv run --isolated --extra fsdp \
   python examples/train/geometry3k/geometry3k_entrypoint.py \
@@ -54,5 +56,7 @@ _SKYRL_USE_NEW_INFERENCE=1 uv run --isolated --extra fsdp \
   trainer.run_name="geometry3k_vlm" \
   trainer.resume_mode=null \
   trainer.log_path="/tmp/skyrl-logs" \
+  trainer.export_path="$EXPORT_PATH" \
+  trainer.dump_eval_results="$DUMP_EVAL_RESULTS" \
   trainer.ckpt_path="$HOME/ckpts/geometry3k_vlm_ckpt" \
   $@

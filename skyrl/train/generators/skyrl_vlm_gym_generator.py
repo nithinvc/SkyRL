@@ -258,6 +258,7 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
             env_metrics=env_metrics,
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
+            conversation=conversation,
         )
 
     async def generate_batched(self, *args, **kwargs) -> GeneratorOutput:

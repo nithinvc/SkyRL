@@ -54,6 +54,7 @@ class TrajectoryOutput:
     rollout_expert_indices: Optional[List[List[List[int]]]] = None
     pixel_values: Optional[torch.Tensor] = None
     image_grid_thw: Optional[torch.Tensor] = None
+    conversation: Optional[List[Dict[str, Any]]] = None
 
 
 @dataclass
@@ -798,6 +799,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             env_classes = out_env_classes
             pixel_values = None
             image_grid_thw = None
+            conversations = None
         else:
             responses = [output.response_ids for output in all_outputs]
             rewards = [output.reward for output in all_outputs]
@@ -812,6 +814,9 @@ class SkyRLGymGenerator(GeneratorInterface):
             has_pixel_values = any(output.pixel_values is not None for output in all_outputs)
             pixel_values = [output.pixel_values for output in all_outputs] if has_pixel_values else None
             image_grid_thw = [output.image_grid_thw for output in all_outputs] if has_pixel_values else None
+
+            has_conversations = any(output.conversation is not None for output in all_outputs)
+            conversations = [output.conversation for output in all_outputs] if has_conversations else None
 
         if sampling_params is not None:
             # sampling params will be a dict in the format of the inference engine backend
@@ -858,6 +863,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             "is_last_step": is_last_step,
             "pixel_values": pixel_values,
             "image_grid_thw": image_grid_thw,
+            "conversations": conversations if not self.generator_cfg.step_wise_trajectories else None,
         }
 
         return generator_output

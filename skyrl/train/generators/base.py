@@ -47,6 +47,7 @@ class GeneratorOutput(TypedDict):
     is_last_step: Optional[List[bool]]
     pixel_values: Optional[List[torch.Tensor]]
     image_grid_thw: Optional[List[torch.Tensor]]
+    conversations: Optional[List[List[Dict[str, Any]]]]
 
 
 class MetricsOutput(TypedDict):
