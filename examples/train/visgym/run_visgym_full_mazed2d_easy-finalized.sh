@@ -68,7 +68,7 @@ uv run --isolated --extra fsdp \
   generator.inference_engine.gpu_memory_utilization=0.8 \
   generator.inference_engine.async_engine=true \
   generator.inference_engine.engine_init_kwargs.max_model_len=60000 \
-  trainer.epochs=10 \
+  trainer.epochs=30 \
   trainer.train_batch_size=$TRAIN_BATCH_SIZE \
   trainer.policy_mini_batch_size=$POLICY_MINI_BATCH_SIZE \
   trainer.micro_forward_batch_size_per_gpu=4 \
