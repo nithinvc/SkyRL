@@ -14,7 +14,8 @@ import re
 from typing import Any, Dict, List
 
 from skyrl_gym.envs.base_text_env import BaseTextEnv, BaseTextEnvStepOutput
-from skyrl_gym.envs.geometry3k.math_utils import extract_boxed_answer, grade_answer_verl
+
+from .math_utils import extract_boxed_answer, grade_answer_verl
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +147,7 @@ class Geometry3kEnv(BaseTextEnv):
 
         tool_call = self._extract_tool_call(action)
 
-        # No tool call detected — try to extract answer from text directly
+        # No tool call detected - try to extract answer from text directly.
         if not tool_call:
             answer_text = self._extract_answer_from_text(action)
             if answer_text:
@@ -159,7 +160,7 @@ class Geometry3kEnv(BaseTextEnv):
                 metadata={"ground_truth": self.ground_truth, "tool_call": False},
             )
 
-        # Validate tool name
+        # Validate tool name.
         name = (tool_call.get("name") or "").strip()
         if name not in SUPPORTED_TOOL_NAMES:
             feedback = (
@@ -174,7 +175,7 @@ class Geometry3kEnv(BaseTextEnv):
                 metadata={"ground_truth": self.ground_truth, "tool_call": True, "unsupported_tool": name},
             )
 
-        # Extract and score the answer
+        # Extract and score the answer.
         arguments = tool_call.get("arguments") or {}
         raw_answer = arguments.get("answer", "")
         parsed_answer = str(raw_answer).strip() if raw_answer else ""
@@ -195,7 +196,7 @@ class Geometry3kEnv(BaseTextEnv):
         score = self._score_answer(parsed_answer)
         self.correct = score == 1.0
 
-        # Episode ends if correct or final turn
+        # Episode ends if correct or final turn.
         done = self.correct or is_final_turn
         reward = score if done else 0.0
 
@@ -207,7 +208,7 @@ class Geometry3kEnv(BaseTextEnv):
                 metadata={"ground_truth": self.ground_truth, "tool_call": True, "score": score, "answer": parsed_answer},
             )
 
-        # Intermediate turn — return feedback
+        # Intermediate turn - return feedback.
         feedback = self._build_tool_feedback(score, parsed_answer)
         return BaseTextEnvStepOutput(
             observations=[{"role": "user", "content": feedback}],

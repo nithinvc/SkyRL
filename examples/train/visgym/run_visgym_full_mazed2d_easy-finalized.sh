@@ -45,11 +45,12 @@ if [ ! -f "$EVAL_DATA_DIR/train.parquet" ]; then
   echo "=== Generating eval stub dataset for $ENV_ID ==="
   uv run examples/train/visgym/visgym_dataset.py \
     --env_id "$ENV_ID" \
-    --num_rows 32 \
+    --num_rows 64 \
+    --seed \
     --output_dir "$EVAL_DATA_DIR"
 fi
 
-MODEL_PATH="/home/ray/models/visgym_model/mixed_qwen3vl"
+MODEL_PATH="/mnt/local_storage/visgym_model_repo/mixed_qwen3vl"
 _SKYRL_USE_NEW_INFERENCE=1 \
 uv run --isolated --extra fsdp \
   python examples/train/visgym/visgym_entrypoint.py \

@@ -1,13 +1,12 @@
 """
-Custom entrypoint for VLM RL training with VisGym environments.
+Custom entrypoint for Geometry-3K VLM RL training.
 
-Sets ``generator.is_vlm=True`` so that BasePPOExp wires in
-SkyRLVLMGymGenerator (multi-modal) instead of the default
-SkyRLGymGenerator (text-only).
+Registers the example-local Geometry-3K environment before starting the
+standard PPO experiment.
 
 Usage:
     uv run --isolated --extra fsdp \
-        python examples/train/visgym/visgym_entrypoint.py \
+        python examples/train/geometry3k/geometry3k_entrypoint.py \
         generator.is_vlm=True [config overrides...]
 """
 
@@ -26,11 +25,11 @@ mp.set_start_method("spawn", force=True)
 
 
 @ray.remote(num_cpus=1)
-def visgym_entrypoint(cfg: SkyRLTrainConfig):
+def geometry3k_entrypoint(cfg: SkyRLTrainConfig):
     register(
-      id="visgym",  # <-- The name of the environment.
-      entry_point="examples.train.visgym.env:VisGymEnv",  # <-- The path to the environment class.
-   )
+        id="geometry3k",
+        entry_point="examples.train.geometry3k.env:Geometry3kEnv",
+    )
 
     exp = BasePPOExp(cfg)
     exp.run()
@@ -40,7 +39,7 @@ def main() -> None:
     cfg = SkyRLTrainConfig.from_cli_overrides(sys.argv[1:])
     validate_cfg(cfg)
     initialize_ray(cfg)
-    ray.get(visgym_entrypoint.remote(cfg))
+    ray.get(geometry3k_entrypoint.remote(cfg))
 
 
 if __name__ == "__main__":

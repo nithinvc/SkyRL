@@ -11,7 +11,8 @@ set -x
 : "${LOGGER:=wandb}"
 : "${INFERENCE_BACKEND:=vllm}"
 
-uv run --isolated --extra fsdp -m skyrl.train.entrypoints.main_base \
+uv run --isolated --extra fsdp \
+  python examples/train/geometry3k/geometry3k_entrypoint.py \
   data.train_data="['$DATA_DIR/train.parquet']" \
   data.val_data="['$DATA_DIR/train-dev.parquet']" \
   trainer.algorithm.advantage_estimator="grpo" \
@@ -43,6 +44,7 @@ uv run --isolated --extra fsdp -m skyrl.train.entrypoints.main_base \
   generator.inference_engine.weight_sync_backend=nccl \
   generator.inference_engine.async_engine=true \
   generator.batched=false \
+  generator.is_vlm=true \
   environment.env_class=geometry3k \
   generator.n_samples_per_prompt=5 \
   generator.inference_engine.gpu_memory_utilization=0.8 \

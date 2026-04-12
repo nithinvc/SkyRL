@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Tuple
 import gymnasium
 
 from skyrl_gym.envs.base_text_env import BaseTextEnv, BaseTextEnvStepOutput, ConversationType
-from skyrl_gym.envs.visgym.utils import extract_action, make_image_message
+from examples.train.visgym.utils import extract_action, make_image_message
 
 _FORMAT_INSTRUCTION = (
     "\n\nIMPORTANT: Respond with exactly one action as a Python tuple, "
