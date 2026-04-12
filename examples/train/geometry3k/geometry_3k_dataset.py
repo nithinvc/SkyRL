@@ -63,7 +63,7 @@ def make_map_fn(split):
 
         images = example["images"]
         for img in images:
-            content.append({"type": "image", "image": _pil_to_data_uri(img)})
+            content.append({"type": "image_url", "image_url": {"url": _pil_to_data_uri(img)}})
 
         # Add the problem text with our question template
         content.append({"type": "text", "text": QUESTION_TEMPLATE.format(Question=problem_text)})

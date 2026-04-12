@@ -71,7 +71,7 @@ uv run --isolated --extra fsdp \
   trainer.epochs=10 \
   trainer.train_batch_size=$TRAIN_BATCH_SIZE \
   trainer.policy_mini_batch_size=$POLICY_MINI_BATCH_SIZE \
-  trainer.micro_forward_batch_size_per_gpu=8 \
+  trainer.micro_forward_batch_size_per_gpu=4 \
   trainer.micro_train_batch_size_per_gpu=4 \
   trainer.update_epochs_per_batch=1 \
   trainer.max_prompt_length=2048 \
