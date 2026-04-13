@@ -21,14 +21,14 @@ set -x
 : "${NUM_TRAIN_GPUS:=8}"
 : "${LOGGER:=wandb}"
 
-: "${EXPORT_PATH:="$HOME/exports/visgym_maze_2d_easy"}"
+: "${EXPORT_PATH:="$HOME/exports/visgym_maze_2d_easy_format_reward_0.2"}"
 : "${DUMP_TRAINING_BATCHES:=false}"
 : "${DUMP_EVAL_RESULTS:=true}"
 : "${EVAL_INTERVAL:=10}"
 
-: "${TRAIN_BATCH_SIZE:=64}"
-: "${POLICY_MINI_BATCH_SIZE:=32}"
-: "${N_SAMPLES_PER_PROMPT:=16}"
+: "${TRAIN_BATCH_SIZE:=32}"
+: "${POLICY_MINI_BATCH_SIZE:=16}"
+: "${N_SAMPLES_PER_PROMPT:=8}"
 : "${NUM_DATASET_ROWS:=256}"
 : "${EVAL_DATA_DIR:="$HOME/data/visgym_maze_2d_easy_eval"}"
 
@@ -76,8 +76,8 @@ uv run --isolated --extra fsdp \
   trainer.update_epochs_per_batch=1 \
   trainer.max_prompt_length=2048 \
   generator.sampling_params.max_generate_length=1024 \
-  generator.sampling_params.temperature=1 \
-  generator.max_turns=16 \
+  generator.sampling_params.temperature=0.7 \
+  generator.max_turns=15 \
   generator.max_input_length=8192 \
   generator.n_samples_per_prompt=$N_SAMPLES_PER_PROMPT \
   generator.is_vlm=true \
@@ -87,13 +87,13 @@ uv run --isolated --extra fsdp \
   environment.env_class=visgym \
   trainer.logger="$LOGGER" \
   trainer.project_name="vlm_maze_2d_easy" \
-  trainer.run_name="maze_2d_easy_full" \
+  trainer.run_name="maze_2d_easy_full_format_reward_0.2-reduced_bsz" \
   trainer.resume_mode=null \
   trainer.log_path="/tmp/skyrl-logs" \
   trainer.export_path="$EXPORT_PATH" \
   trainer.dump_data_batch="$DUMP_TRAINING_BATCHES" \
   trainer.dump_eval_results="$DUMP_EVAL_RESULTS" \
-  trainer.ckpt_path="$HOME/ckpts/visgym_maze_2d_easy" \
+  trainer.ckpt_path="$HOME/ckpts/visgym_maze_2d_easy_format_reward_0.2" \
   trainer.use_sample_packing=false \
   trainer.eval_interval="$EVAL_INTERVAL" \
   trainer.ckpt_interval=10 \
