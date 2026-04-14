@@ -6,8 +6,8 @@ import gymnasium
 from skyrl_gym.envs.base_text_env import BaseTextEnv, BaseTextEnvStepOutput, ConversationType
 from examples.train.visgym_relaxed.utils import extract_relaxed_action, make_image_message, VALID_ACTIONS
 
-_TASK_REWARD_COEFF = 0.8
-_FORMAT_REWARD_COEFF = 0.2
+_TASK_REWARD_COEFF = 1
+_FORMAT_REWARD_COEFF = 0
 
 _ACTION_TAG_RE = re.compile(r"<action>\s*(\w+)\s*</action>", re.IGNORECASE)
 

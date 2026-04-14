@@ -79,7 +79,7 @@ uv run --isolated --extra fsdp \
   trainer.update_epochs_per_batch=1 \
   trainer.max_prompt_length=2048 \
   generator.sampling_params.max_generate_length=1024 \
-  generator.sampling_params.temperature=0.7 \
+  generator.sampling_params.temperature=1 \
   generator.max_turns=18 \
   generator.max_input_length=8192 \
   generator.n_samples_per_prompt=$N_SAMPLES_PER_PROMPT \
@@ -96,8 +96,8 @@ uv run --isolated --extra fsdp \
   trainer.export_path="$EXPORT_PATH" \
   trainer.dump_data_batch="$DUMP_TRAINING_BATCHES" \
   trainer.dump_eval_results="$DUMP_EVAL_RESULTS" \
-  trainer.ckpt_path="$HOME/ckpts/visgym_maze_2d_easy_relaxed_qwen3vl_instruct" \
+  trainer.ckpt_path="$HOME/ckpts/visgym_maze_2d_easy_relaxed_qwen3vl_instruct-no-format" \
   trainer.use_sample_packing=false \
   trainer.eval_interval="$EVAL_INTERVAL" \
-  trainer.ckpt_interval=10 \
+  trainer.ckpt_interval=2 \
   "$@"
