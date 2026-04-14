@@ -24,7 +24,7 @@ set -x
 : "${NUM_TRAIN_GPUS:=8}"
 : "${LOGGER:=wandb}"
 
-: "${EXPORT_PATH:="$HOME/exports/visgym_maze_2d_easy_relaxed_qwen3vl_instruct"}"
+: "${EXPORT_PATH:="$HOME/exports/visgym_maze_2d_easy_relaxed_qwen3vl_instruct-kl0_005"}"
 : "${DUMP_TRAINING_BATCHES:=false}"
 : "${DUMP_EVAL_RESULTS:=true}"
 : "${EVAL_INTERVAL:=10}"
@@ -85,18 +85,19 @@ uv run --isolated --extra fsdp \
   generator.n_samples_per_prompt=$N_SAMPLES_PER_PROMPT \
   generator.is_vlm=true \
   generator.batched=false \
-  trainer.algorithm.use_kl_loss=false \
+  trainer.algorithm.use_kl_loss=true \
+  trainer.algorithm.kl_loss_coef=0.005 \
   trainer.policy.optimizer_config.lr=1.0e-6 \
   environment.env_class=visgym \
   trainer.logger="$LOGGER" \
   trainer.project_name="vlm_maze_2d_easy" \
-  trainer.run_name="maze_2d_easy_relaxed_qwen3vl_8b_instruct" \
+  trainer.run_name="maze_2d_easy_relaxed_qwen3vl_8b_instruct-kl0_005" \
   trainer.resume_mode=null \
   trainer.log_path="/tmp/skyrl-logs" \
   trainer.export_path="$EXPORT_PATH" \
   trainer.dump_data_batch="$DUMP_TRAINING_BATCHES" \
   trainer.dump_eval_results="$DUMP_EVAL_RESULTS" \
-  trainer.ckpt_path="$HOME/ckpts/visgym_maze_2d_easy_relaxed_qwen3vl_instruct-no-format" \
+  trainer.ckpt_path="$HOME/ckpts/visgym_maze_2d_easy_relaxed_qwen3vl_instruct-kl0_005" \
   trainer.use_sample_packing=false \
   trainer.eval_interval="$EVAL_INTERVAL" \
   trainer.ckpt_interval=2 \
