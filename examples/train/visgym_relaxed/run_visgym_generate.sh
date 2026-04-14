@@ -61,10 +61,10 @@ uv run --isolated --extra fsdp \
   trainer.logger="$LOGGER" \
   trainer.project_name="vlm_maze_2d_easy_generate" \
   trainer.run_name="visgym_generate_dev" \
-  trainer.log_path="/tmp/skyrl-logs" \
-  trainer.export_path="/tmp/skyrl-exports" \
-  trainer.ckpt_path="/tmp/skyrl-ckpts" \
-  trainer.dump_eval_results=true \
+  trainer.log_path="$HOME/exports/testing/logs" \
+  trainer.export_path="$HOME/exports/testing" \
+  trainer.ckpt_path="$HOME/exports/testing/ckpts" \
+  trainer.dump_eval_results=false \
   trainer.max_prompt_length=2048 \
   generator.inference_engine.external_proxy_url="$PROXY_URL" \
   generator.inference_engine.external_server_urls="$_py_list" \
