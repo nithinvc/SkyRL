@@ -41,6 +41,19 @@ from skyrl_gym.envs.base_text_env import BaseTextEnvStepOutput
 
 
 @dataclass
+class TurnProfile:
+    """Timing and token counts for a single turn in the agent loop."""
+
+    turn: int
+    render_time_s: float
+    generate_time_s: float
+    env_step_time_s: float
+    deserialize_time_s: float
+    num_input_tokens: int
+    num_output_tokens: int
+
+
+@dataclass
 class TrajectoryOutput:
     """Output from a single agent_loop execution."""
 
@@ -55,6 +68,7 @@ class TrajectoryOutput:
     pixel_values: Optional[torch.Tensor] = None
     image_grid_thw: Optional[torch.Tensor] = None
     conversation: Optional[List[Dict[str, Any]]] = None
+    turn_profiles: Optional[List[TurnProfile]] = None
 
 
 @dataclass

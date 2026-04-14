@@ -13,12 +13,18 @@ are masked out (loss_mask=0).
 """
 
 import copy
+import json
+import os
+import time
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 from uuid import uuid4
 
+import numpy as np
 import torch
 from loguru import logger
+from tqdm.asyncio import tqdm
 
 import skyrl_gym
 from skyrl.backends.skyrl_train.inference_engines.base import (
@@ -30,10 +36,15 @@ from skyrl.backends.skyrl_train.inference_servers.remote_inference_client import
     RemoteInferenceClient,
 )
 from skyrl.train.config import GeneratorConfig, SkyRLGymConfig
-from skyrl.train.generators.base import GeneratorOutput, TrajectoryID
+from skyrl.train.generators.base import GeneratorInput, GeneratorOutput, TrajectoryID
 from skyrl.train.generators.skyrl_gym_generator import (
     SkyRLGymGenerator,
     TrajectoryOutput,
+    TurnProfile,
+)
+from skyrl.train.generators.utils import (
+    apply_overlong_filtering,
+    get_rollout_metrics,
 )
 
 
@@ -180,10 +191,15 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
         # (which produces identical token_ids since the conversation hasn't
         # changed in between).
         pending_obs_offset: Optional[int] = None
+        turn_profiles: List[TurnProfile] = []
+        turn_idx = 0
 
         while not done:
             # 1. Render full conversation for this turn's generation input
+            t0 = time.perf_counter()
             rendered_conversation = await self._render_conversation(conversation)
+            render_time = time.perf_counter() - t0
+
             input_ids = rendered_conversation["prompt_ids"]
             latest_features = rendered_conversation["features"]
 
@@ -207,7 +223,9 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
                 sampling_params=current_sampling_params,
                 mm_features=latest_features,
             )
+            t0 = time.perf_counter()
             engine_output = await self.inference_client.generate(engine_input)
+            generate_time = time.perf_counter() - t0
 
             gen_text = engine_output["responses"][0]
             gen_ids = engine_output["response_ids"][0]
@@ -215,10 +233,24 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
             gen_logprobs = engine_output["response_logprobs"][0] if engine_output.get("response_logprobs") else None
 
             # 3. Environment step
+            t0 = time.perf_counter()
             env_step_output = await self._run_in_executor_if_available(env.step, gen_text)
+            env_step_time = time.perf_counter() - t0
+
             new_obs = env_step_output["observations"]
             step_reward: float = env_step_output["reward"]
             done = env_step_output["done"]
+
+            turn_profiles.append(TurnProfile(
+                turn=turn_idx,
+                render_time_s=render_time,
+                generate_time_s=generate_time,
+                env_step_time_s=env_step_time,
+                deserialize_time_s=0.0,
+                num_input_tokens=len(input_ids),
+                num_output_tokens=len(gen_ids),
+            ))
+            turn_idx += 1
 
             # 4. Append assistant message to conversation
             conversation.append({"role": "assistant", "content": gen_text})
@@ -242,7 +274,21 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
             per_token_reward[idx] = float(reward)
 
         # ── Deserialize vision tensors from the most recent render ────
+        t0 = time.perf_counter()
         pixel_values, image_grid_thw = deserialize_mm_features(latest_features)
+        deserialize_time = time.perf_counter() - t0
+
+        if turn_profiles:
+            last = turn_profiles[-1]
+            turn_profiles[-1] = TurnProfile(
+                turn=last.turn,
+                render_time_s=last.render_time_s,
+                generate_time_s=last.generate_time_s,
+                env_step_time_s=last.env_step_time_s,
+                deserialize_time_s=deserialize_time,
+                num_input_tokens=last.num_input_tokens,
+                num_output_tokens=last.num_output_tokens,
+            )
 
         # ── Cleanup ───────────────────────────────────────────────────
         env_metrics = env.get_metrics()
@@ -259,7 +305,275 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
             conversation=conversation,
+            turn_profiles=turn_profiles,
         )
+
+    async def generate(self, input_batch: GeneratorInput, disable_tqdm: bool = False) -> GeneratorOutput:
+        """Override parent generate() to collect turn profiles and export a profiling report."""
+        prompts = input_batch["prompts"]
+        env_classes = input_batch["env_classes"]
+        env_extras = input_batch["env_extras"]
+        trajectory_ids = input_batch.get("trajectory_ids", None)
+        sampling_params: Optional[dict] = input_batch.get("sampling_params", None)
+        max_tokens = self.generator_cfg.sampling_params.max_generate_length
+        max_input_length = self.generator_cfg.max_input_length
+
+        tasks = []
+        for i in range(len(prompts)):
+            tasks.append(
+                self.agent_loop(
+                    prompts[i],
+                    env_classes[i],
+                    env_extras[i],
+                    max_tokens,
+                    max_input_length,
+                    sampling_params=sampling_params,
+                    trajectory_id=trajectory_ids[i] if trajectory_ids is not None else None,
+                )
+            )
+
+        all_outputs: List[TrajectoryOutput] = await tqdm.gather(
+            *tasks,
+            desc="Generating Trajectories",
+            miniters=max(1, len(tasks) // 10),
+            mininterval=5,
+            disable=disable_tqdm,
+        )
+
+        # ── Collect and export profiling data ─────────────────────────
+        all_profiles = [o.turn_profiles for o in all_outputs if o.turn_profiles]
+        if all_profiles:
+            self._export_profiling_report(all_profiles)
+
+        # ── Aggregate outputs (non-step-wise VLM path) ────────────────
+        responses = [output.response_ids for output in all_outputs]
+        rewards = [output.reward for output in all_outputs]
+        stop_reasons = [output.stop_reason for output in all_outputs]
+        loss_masks = [output.loss_mask for output in all_outputs]
+        prompt_token_ids = [output.prompt_ids for output in all_outputs]
+        env_metrics = [output.env_metrics for output in all_outputs]
+
+        has_pixel_values = any(output.pixel_values is not None for output in all_outputs)
+        pixel_values = [output.pixel_values for output in all_outputs] if has_pixel_values else None
+        image_grid_thw = [output.image_grid_thw for output in all_outputs] if has_pixel_values else None
+
+        has_conversations = any(output.conversation is not None for output in all_outputs)
+        conversations = [output.conversation for output in all_outputs] if has_conversations else None
+
+        if sampling_params is not None:
+            get_logprobs = sampling_params.get("logprobs", None) is not None
+        else:
+            get_logprobs = self.generator_cfg.sampling_params.logprobs is not None
+
+        rollout_logprobs = (
+            [output.rollout_logprobs for output in all_outputs] if get_logprobs else None
+        )
+
+        if self.generator_cfg.inference_engine.enable_return_routed_experts:
+            rollout_expert_indices = [output.rollout_expert_indices for output in all_outputs]
+        else:
+            rollout_expert_indices = None
+
+        rollout_metrics = get_rollout_metrics(responses, rewards, env_metrics, env_classes)
+
+        if self.generator_cfg.zero_reward_on_non_stop:
+            rewards = self._zero_reward_if_not_stop(rewards, stop_reasons)
+
+        if self.generator_cfg.apply_overlong_filtering:
+            loss_masks = apply_overlong_filtering(loss_masks, stop_reasons)
+
+        generator_output: GeneratorOutput = {
+            "prompt_token_ids": prompt_token_ids,
+            "response_ids": responses,
+            "rewards": rewards,
+            "loss_masks": loss_masks,
+            "stop_reasons": stop_reasons,
+            "rollout_metrics": rollout_metrics,
+            "rollout_logprobs": rollout_logprobs,
+            "trajectory_ids": None,
+            "rollout_expert_indices": rollout_expert_indices,
+            "is_last_step": None,
+            "pixel_values": pixel_values,
+            "image_grid_thw": image_grid_thw,
+            "conversations": conversations,
+        }
+
+        return generator_output
+
+    def _export_profiling_report(self, all_profiles: List[List[TurnProfile]]) -> None:
+        """Export raw profiles, aggregated summary, and graphs to the experiment directory."""
+        exp_name = os.environ.get("INFERENCE_EXP_NAME", "default")
+        exp_dir = Path("/home/ray/default/skyrl-vlm/SkyRL/inference-exps") / exp_name
+        exp_dir.mkdir(parents=True, exist_ok=True)
+
+        # ── Raw data ──────────────────────────────────────────────────
+        raw = [[asdict(tp) for tp in traj] for traj in all_profiles]
+        (exp_dir / "raw_profiles.json").write_text(json.dumps(raw, indent=2))
+
+        # ── Aggregate by turn number ─────────────────────────────────
+        turn_data: Dict[int, Dict[str, list]] = {}
+        fields = [
+            "render_time_s", "generate_time_s", "env_step_time_s",
+            "deserialize_time_s", "num_input_tokens", "num_output_tokens",
+        ]
+        for traj in all_profiles:
+            for tp in traj:
+                bucket = turn_data.setdefault(tp.turn, {f: [] for f in fields})
+                for f in fields:
+                    bucket[f].append(getattr(tp, f))
+
+        def _stats(values: list) -> dict:
+            a = np.array(values, dtype=np.float64)
+            return {
+                "mean": float(np.mean(a)),
+                "std": float(np.std(a)),
+                "p50": float(np.median(a)),
+                "p95": float(np.percentile(a, 95)),
+                "min": float(np.min(a)),
+                "max": float(np.max(a)),
+                "count": len(values),
+            }
+
+        summary: Dict[str, Any] = {"per_turn": {}, "totals": {}}
+        for turn_num in sorted(turn_data):
+            summary["per_turn"][turn_num] = {
+                f: _stats(turn_data[turn_num][f]) for f in fields
+            }
+            gen_times = np.array(turn_data[turn_num]["generate_time_s"])
+            out_tokens = np.array(turn_data[turn_num]["num_output_tokens"], dtype=np.float64)
+            in_tokens = np.array(turn_data[turn_num]["num_input_tokens"], dtype=np.float64)
+            safe_out = np.where(out_tokens > 0, out_tokens, 1.0)
+            safe_in = np.where(in_tokens > 0, in_tokens, 1.0)
+            summary["per_turn"][turn_num]["generate_time_per_output_token_s"] = _stats(
+                (gen_times / safe_out).tolist()
+            )
+            summary["per_turn"][turn_num]["generate_time_per_input_token_s"] = _stats(
+                (gen_times / safe_in).tolist()
+            )
+
+        total_times = {f: 0.0 for f in fields[:4]}
+        total_input_tokens = 0
+        total_output_tokens = 0
+        for traj in all_profiles:
+            for tp in traj:
+                total_times["render_time_s"] += tp.render_time_s
+                total_times["generate_time_s"] += tp.generate_time_s
+                total_times["env_step_time_s"] += tp.env_step_time_s
+                total_times["deserialize_time_s"] += tp.deserialize_time_s
+                total_input_tokens += tp.num_input_tokens
+                total_output_tokens += tp.num_output_tokens
+
+        summary["totals"] = {
+            **total_times,
+            "total_time_s": sum(total_times.values()),
+            "num_trajectories": len(all_profiles),
+            "total_input_tokens": total_input_tokens,
+            "total_output_tokens": total_output_tokens,
+        }
+
+        (exp_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+        logger.info(f"Profiling report written to {exp_dir}")
+
+        # ── Graphs ────────────────────────────────────────────────────
+        try:
+            self._generate_profiling_graphs(turn_data, total_times, all_profiles, exp_dir)
+        except Exception:
+            logger.exception("Failed to generate profiling graphs")
+
+    def _generate_profiling_graphs(
+        self,
+        turn_data: Dict[int, Dict[str, list]],
+        total_times: Dict[str, float],
+        all_profiles: List[List[TurnProfile]],
+        exp_dir: Path,
+    ) -> None:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        turns = sorted(turn_data.keys())
+        component_keys = ["render_time_s", "generate_time_s", "env_step_time_s", "deserialize_time_s"]
+        component_labels = ["Render", "Generate", "Env Step", "Deserialize"]
+
+        # 1. Stacked bar: mean time per component by turn
+        fig, ax = plt.subplots(figsize=(10, 6))
+        bottoms = np.zeros(len(turns))
+        for key, label in zip(component_keys, component_labels):
+            means = [np.mean(turn_data[t][key]) for t in turns]
+            ax.bar(turns, means, bottom=bottoms, label=label)
+            bottoms += np.array(means)
+        ax.set_xlabel("Turn")
+        ax.set_ylabel("Mean Time (s)")
+        ax.set_title("Time per Component by Turn")
+        ax.legend()
+        ax.set_xticks(turns)
+        fig.tight_layout()
+        fig.savefig(exp_dir / "time_by_turn_stacked_bar.png", dpi=150)
+        plt.close(fig)
+
+        # 2. Line chart: mean input/output tokens by turn
+        fig, ax = plt.subplots(figsize=(10, 6))
+        mean_in = [np.mean(turn_data[t]["num_input_tokens"]) for t in turns]
+        mean_out = [np.mean(turn_data[t]["num_output_tokens"]) for t in turns]
+        ax.plot(turns, mean_in, marker="o", label="Input Tokens")
+        ax.plot(turns, mean_out, marker="s", label="Output Tokens")
+        ax.set_xlabel("Turn")
+        ax.set_ylabel("Mean Token Count")
+        ax.set_title("Tokens by Turn")
+        ax.legend()
+        ax.set_xticks(turns)
+        fig.tight_layout()
+        fig.savefig(exp_dir / "tokens_by_turn.png", dpi=150)
+        plt.close(fig)
+
+        # 3. Line chart: generate time per output token by turn
+        fig, ax = plt.subplots(figsize=(10, 6))
+        time_per_out = []
+        for t in turns:
+            gen_t = np.array(turn_data[t]["generate_time_s"])
+            out_t = np.array(turn_data[t]["num_output_tokens"], dtype=np.float64)
+            safe = np.where(out_t > 0, out_t, 1.0)
+            time_per_out.append(float(np.mean(gen_t / safe)))
+        ax.plot(turns, time_per_out, marker="o", color="tab:red")
+        ax.set_xlabel("Turn")
+        ax.set_ylabel("Mean Generate Time / Output Token (s)")
+        ax.set_title("Generate Time per Output Token by Turn")
+        ax.set_xticks(turns)
+        fig.tight_layout()
+        fig.savefig(exp_dir / "generate_time_per_output_token_by_turn.png", dpi=150)
+        plt.close(fig)
+
+        # 4. Pie chart: total time breakdown
+        fig, ax = plt.subplots(figsize=(8, 8))
+        sizes = [total_times[k] for k in component_keys]
+        nonzero = [(s, l) for s, l in zip(sizes, component_labels) if s > 0]
+        if nonzero:
+            ax.pie(
+                [s for s, _ in nonzero],
+                labels=[l for _, l in nonzero],
+                autopct="%1.1f%%",
+                startangle=90,
+            )
+            ax.set_title("Total Time Breakdown")
+        fig.tight_layout()
+        fig.savefig(exp_dir / "total_time_breakdown_pie.png", dpi=150)
+        plt.close(fig)
+
+        # 5. Histogram: generate latency distribution
+        fig, ax = plt.subplots(figsize=(10, 6))
+        all_gen_times = []
+        for traj in all_profiles:
+            for tp in traj:
+                all_gen_times.append(tp.generate_time_s)
+        ax.hist(all_gen_times, bins=min(50, max(10, len(all_gen_times) // 5)), edgecolor="black")
+        ax.set_xlabel("Generate Latency (s)")
+        ax.set_ylabel("Count")
+        ax.set_title("Generate Latency Distribution")
+        fig.tight_layout()
+        fig.savefig(exp_dir / "generate_latency_histogram.png", dpi=150)
+        plt.close(fig)
+
+        logger.info(f"Profiling graphs saved to {exp_dir}")
 
     async def generate_batched(self, *args, **kwargs) -> GeneratorOutput:
         raise NotImplementedError(

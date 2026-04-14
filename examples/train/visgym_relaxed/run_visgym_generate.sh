@@ -16,16 +16,19 @@ set -x
 #     bash examples/train/visgym_relaxed/run_visgym_generate.sh
 #
 # Environment variable overrides:
-#   PROXY_URL       Router URL from start_servers.sh output
-#   SERVER_URLS     Comma-separated server URLs from start_servers.sh output
-#   MODEL_PATH      Model name (must match what servers are serving)
-#   LOGGER          Logging backend (default: console)
+#   PROXY_URL              Router URL from start_servers.sh output
+#   SERVER_URLS            Comma-separated server URLs from start_servers.sh output
+#   MODEL_PATH             Model name (must match what servers are serving)
+#   LOGGER                 Logging backend (default: console)
+#   INFERENCE_EXP_NAME     Profiling experiment name (default: "default")
 
 : "${ENV_ID:=maze_2d/easy}"
 : "${EVAL_DATA_DIR:=$HOME/data/visgym_maze_2d_easy_eval}"
 : "${MODEL_PATH:=Qwen/Qwen3-VL-8B-Instruct}"
 : "${LOGGER:=console}"
 : "${N_SAMPLES_PER_PROMPT:=8}"
+: "${INFERENCE_EXP_NAME:=default}"
+export INFERENCE_EXP_NAME
 
 # Server connection - these must match start_servers.sh output
 : "${PROXY_URL:?Set PROXY_URL to the router URL printed by start_servers.sh}"
