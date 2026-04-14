@@ -478,6 +478,9 @@ class InferenceEngineConfig(BaseConfig):
     """Data-plane URL (load-balanced router) for the new inference layer."""
     external_server_urls: Optional[List[str]] = None
     """Control-plane URLs (direct backend access) for the new inference layer."""
+    render_server_url: Optional[str] = None
+    """Dedicated CPU-only render server URL (``vllm launch render``). When set,
+    ``render_chat_completion`` bypasses the proxy/router and goes directly here."""
 
 
 # ---------------------------------------------------------------------------
@@ -519,6 +522,12 @@ class GeneratorConfig(BaseConfig):
     step_wise_trajectories: bool = False
     is_vlm: bool = False
     """Use the VLM generator (SkyRLVLMGymGenerator) for multi-modal observations."""
+    max_concurrent_trajectories: Optional[int] = None
+    """Max concurrent agent_loop executions. When ``None``, defaults to
+    ``SKYRL_GENERATE_CONCURRENCY_PER_ENGINE * num_engines``. Set to ``0`` to
+    disable the cap (launch all at once, legacy behavior)."""
+    exp_name: str = "default"
+    """Experiment name used for the profiling report output directory."""
 
     def __post_init__(self):
 

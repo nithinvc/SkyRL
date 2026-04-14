@@ -21,6 +21,7 @@ set -x
 #   MODEL_PATH             Model name (must match what servers are serving)
 #   LOGGER                 Logging backend (default: console)
 #   INFERENCE_EXP_NAME     Profiling experiment name (default: "default")
+#   RENDER_URL             Dedicated render server URL (optional, from launch_renderer.sh)
 
 : "${ENV_ID:=maze_2d/easy}"
 : "${EVAL_DATA_DIR:=$HOME/data/visgym_maze_2d_easy_eval}"
@@ -28,7 +29,7 @@ set -x
 : "${LOGGER:=console}"
 : "${N_SAMPLES_PER_PROMPT:=8}"
 : "${INFERENCE_EXP_NAME:=default}"
-export INFERENCE_EXP_NAME
+: "${RENDER_URL:=}"
 
 # Server connection - these must match start_servers.sh output
 : "${PROXY_URL:?Set PROXY_URL to the router URL printed by start_servers.sh}"
@@ -49,7 +50,7 @@ if [ ! -f "$EVAL_DATA_DIR/train.parquet" ]; then
   echo "=== Generating eval stub dataset for $ENV_ID ==="
   uv run examples/train/visgym_relaxed/visgym_dataset.py \
     --env_id "$ENV_ID" \
-    --num_rows 64 \
+    --num_rows 256 \
     --seed \
     --output_dir "$EVAL_DATA_DIR"
 fi
@@ -72,6 +73,7 @@ uv run --isolated --extra fsdp \
   generator.inference_engine.external_proxy_url="$PROXY_URL" \
   generator.inference_engine.external_server_urls="$_py_list" \
   generator.inference_engine.async_engine=true \
+  ${RENDER_URL:+generator.inference_engine.render_server_url="$RENDER_URL"} \
   generator.sampling_params.max_generate_length=1024 \
   generator.sampling_params.temperature=1 \
   generator.max_turns=18 \
@@ -79,5 +81,6 @@ uv run --isolated --extra fsdp \
   generator.n_samples_per_prompt="$N_SAMPLES_PER_PROMPT" \
   generator.is_vlm=true \
   generator.batched=false \
+  generator.exp_name="$INFERENCE_EXP_NAME" \
   environment.env_class=visgym \
   "$@"

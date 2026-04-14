@@ -406,6 +406,7 @@ class BasePPOExp:
             model_name=self.cfg.trainer.policy.model.path,
             active_lora_name=active_lora_name,
             tokenizer=self.tokenizer,
+            render_server_url=ie_cfg.render_server_url,
         )
 
         if is_colocated:

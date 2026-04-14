@@ -51,6 +51,7 @@ class TurnProfile:
     deserialize_time_s: float
     num_input_tokens: int
     num_output_tokens: int
+    queue_wait_time_s: float = 0.0
 
 
 @dataclass

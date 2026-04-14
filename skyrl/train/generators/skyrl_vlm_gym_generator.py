@@ -12,9 +12,10 @@ logprobs; observation tokens are obtained by slicing the re-render and
 are masked out (loss_mask=0).
 """
 
+import asyncio
 import copy
 import json
-import os
+
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -35,6 +36,7 @@ from skyrl.backends.skyrl_train.inference_engines.base import (
 from skyrl.backends.skyrl_train.inference_servers.remote_inference_client import (
     RemoteInferenceClient,
 )
+from skyrl.env_vars import SKYRL_GENERATE_CONCURRENCY_PER_ENGINE
 from skyrl.train.config import GeneratorConfig, SkyRLGymConfig
 from skyrl.train.generators.base import GeneratorInput, GeneratorOutput, TrajectoryID
 from skyrl.train.generators.skyrl_gym_generator import (
@@ -309,7 +311,11 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
         )
 
     async def generate(self, input_batch: GeneratorInput, disable_tqdm: bool = False) -> GeneratorOutput:
-        """Override parent generate() to collect turn profiles and export a profiling report."""
+        """Override parent generate() to collect turn profiles and export a profiling report.
+
+        Uses a semaphore to bound the number of concurrently active agent_loops,
+        backfilling immediately as each trajectory completes.
+        """
         prompts = input_batch["prompts"]
         env_classes = input_batch["env_classes"]
         env_extras = input_batch["env_extras"]
@@ -318,20 +324,46 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
         max_tokens = self.generator_cfg.sampling_params.max_generate_length
         max_input_length = self.generator_cfg.max_input_length
 
-        tasks = []
-        for i in range(len(prompts)):
-            tasks.append(
-                self.agent_loop(
-                    prompts[i],
-                    env_classes[i],
-                    env_extras[i],
+        # ── Bounded concurrency ───────────────────────────────────────
+        k = self.generator_cfg.max_concurrent_trajectories
+        if k is None:
+            ie_cfg = self.generator_cfg.inference_engine
+            num_engines = (
+                len(ie_cfg.external_server_urls)
+                if ie_cfg.external_server_urls
+                else ie_cfg.num_engines
+            )
+            k = SKYRL_GENERATE_CONCURRENCY_PER_ENGINE * num_engines
+        sem = asyncio.Semaphore(k) if k > 0 else None
+        logger.info(
+            f"Bounded concurrency: max_concurrent_trajectories={k} "
+            f"(0=unlimited), total trajectories={len(prompts)}"
+        )
+
+        async def _bounded_agent_loop(idx: int) -> TrajectoryOutput:
+            queued_at = time.perf_counter()
+            if sem is not None:
+                await sem.acquire()
+            queue_wait = time.perf_counter() - queued_at
+            try:
+                output = await self.agent_loop(
+                    prompts[idx],
+                    env_classes[idx],
+                    env_extras[idx],
                     max_tokens,
                     max_input_length,
                     sampling_params=sampling_params,
-                    trajectory_id=trajectory_ids[i] if trajectory_ids is not None else None,
+                    trajectory_id=trajectory_ids[idx] if trajectory_ids is not None else None,
                 )
-            )
+            finally:
+                if sem is not None:
+                    sem.release()
+            if output.turn_profiles:
+                output.turn_profiles[0].queue_wait_time_s = queue_wait
+            return output
 
+        tasks = [_bounded_agent_loop(i) for i in range(len(prompts))]
+        wall_clock_start = time.perf_counter()
         all_outputs: List[TrajectoryOutput] = await tqdm.gather(
             *tasks,
             desc="Generating Trajectories",
@@ -339,11 +371,12 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
             mininterval=5,
             disable=disable_tqdm,
         )
+        wall_clock_s = time.perf_counter() - wall_clock_start
 
         # ── Collect and export profiling data ─────────────────────────
         all_profiles = [o.turn_profiles for o in all_outputs if o.turn_profiles]
         if all_profiles:
-            self._export_profiling_report(all_profiles)
+            self._export_profiling_report(all_profiles, wall_clock_s=wall_clock_s)
 
         # ── Aggregate outputs (non-step-wise VLM path) ────────────────
         responses = [output.response_ids for output in all_outputs]
@@ -400,9 +433,9 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
 
         return generator_output
 
-    def _export_profiling_report(self, all_profiles: List[List[TurnProfile]]) -> None:
+    def _export_profiling_report(self, all_profiles: List[List[TurnProfile]], *, wall_clock_s: float = 0.0) -> None:
         """Export raw profiles, aggregated summary, and graphs to the experiment directory."""
-        exp_name = os.environ.get("INFERENCE_EXP_NAME", "default")
+        exp_name = self.generator_cfg.exp_name
         exp_dir = Path("/home/ray/default/skyrl-vlm/SkyRL/inference-exps") / exp_name
         exp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -415,6 +448,7 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
         fields = [
             "render_time_s", "generate_time_s", "env_step_time_s",
             "deserialize_time_s", "num_input_tokens", "num_output_tokens",
+            "queue_wait_time_s",
         ]
         for traj in all_profiles:
             for tp in traj:
@@ -454,7 +488,10 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
         total_times = {f: 0.0 for f in fields[:4]}
         total_input_tokens = 0
         total_output_tokens = 0
+        queue_waits: list = []
         for traj in all_profiles:
+            if traj:
+                queue_waits.append(traj[0].queue_wait_time_s)
             for tp in traj:
                 total_times["render_time_s"] += tp.render_time_s
                 total_times["generate_time_s"] += tp.generate_time_s
@@ -469,7 +506,20 @@ class SkyRLVLMGymGenerator(SkyRLGymGenerator):
             "num_trajectories": len(all_profiles),
             "total_input_tokens": total_input_tokens,
             "total_output_tokens": total_output_tokens,
+            "queue_wait_time_s": _stats(queue_waits) if queue_waits else None,
         }
+
+        if wall_clock_s > 0:
+            summary["rollout"] = {
+                "wall_clock_s": wall_clock_s,
+                "num_trajectories": len(all_profiles),
+                "total_output_tokens": total_output_tokens,
+                "total_input_tokens": total_input_tokens,
+                "output_tokens_per_second": total_output_tokens / wall_clock_s,
+                "input_tokens_per_second": total_input_tokens / wall_clock_s,
+                "trajectories_per_second": len(all_profiles) / wall_clock_s,
+                "seconds_per_output_token": wall_clock_s / max(total_output_tokens, 1),
+            }
 
         (exp_dir / "summary.json").write_text(json.dumps(summary, indent=2))
         logger.info(f"Profiling report written to {exp_dir}")

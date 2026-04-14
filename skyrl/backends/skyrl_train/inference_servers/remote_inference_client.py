@@ -144,6 +144,10 @@ class RemoteInferenceClient:
     tokenizer: Optional[Any] = None
     """Optional HF tokenizer for local tokenize/detokenize (avoids HTTP round-trips)."""
 
+    render_server_url: Optional[str] = None
+    """Dedicated render server URL. When set, render_chat_completion routes
+    here instead of through proxy_url, avoiding router contention."""
+
     # Private fields excluded from repr for cleaner output
     _session: Optional[aiohttp.ClientSession] = field(default=None, repr=False)
     _world_size: Optional[Tuple[int, int]] = field(default=None, repr=False)
@@ -399,6 +403,9 @@ class RemoteInferenceClient:
         """
         Render a chat completion (apply chat template + tokenize) via /v1/chat/completions/render.
 
+        When ``render_server_url`` is set, requests go directly to the
+        dedicated CPU-only render server, bypassing the proxy/router.
+
         Args:
             request_payload: Dict with {"json": <request-body>}.
                 The request body should be OpenAI-compatible chat completion request.
@@ -413,7 +420,8 @@ class RemoteInferenceClient:
         if session_id:
             headers["X-Session-ID"] = str(session_id)
 
-        url = f"{self.proxy_url}/v1/chat/completions/render"
+        base_url = self.render_server_url or self.proxy_url
+        url = f"{base_url}/v1/chat/completions/render"
         return await self._post(url, json=body, headers=headers)
 
     async def completion(
