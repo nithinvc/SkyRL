@@ -29,7 +29,7 @@ mp.set_start_method("spawn", force=True)
 def visgym_entrypoint(cfg: SkyRLTrainConfig):
     register(
       id="visgym",  # <-- The name of the environment.
-      entry_point="examples.train.visgym.env:VisGymEnv",  # <-- The path to the environment class.
+      entry_point="examples.train.visgym_relaxed.env:VisGymEnv",  # <-- The path to the environment class.
    )
 
     exp = BasePPOExp(cfg)
